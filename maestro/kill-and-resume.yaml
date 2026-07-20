@@ -1,0 +1,31 @@
+# Layer 3 (Android) — kill-and-resume mid-flow.
+#
+# What this proves: force-stopping the app mid-flow and relaunching doesn't
+# crash it or leave it wedged — it restarts cleanly at the host's home screen,
+# ready to re-present.
+#
+# What it does NOT prove: restoration to the same screen. The demo flow's JS
+# runtime holds screen/state entirely in memory (no localStorage/sessionStorage
+# init read), matching the sdk-ios baseline; relaunch lands back on the host
+# screen, not mid-flow. That's the documented current baseline, not a bug.
+appId: studio.aldric.weir.demo
+---
+- launchApp:
+    clearState: true
+- tapOn: "Start onboarding"
+- extendedWaitUntil:
+    visible: "Begin"
+    timeout: 8000
+- tapOn: "Begin"
+- extendedWaitUntil:
+    visible: "Enable notifications"
+    timeout: 5000
+- takeScreenshot: kill-resume-mid-flow-before-kill
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: "Start onboarding"
+    timeout: 8000
+- assertNotVisible: ".*onFailure.*"
+- takeScreenshot: kill-resume-after-relaunch

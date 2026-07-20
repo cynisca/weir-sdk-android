@@ -1,0 +1,88 @@
+{
+  "flowId": "your_path",
+  "entry": "welcome",
+  "variables": [
+    {
+      "id": "name",
+      "type": "string"
+    },
+    {
+      "id": "gratitude",
+      "type": "string"
+    },
+    {
+      "id": "motivations",
+      "type": "stringArray"
+    },
+    {
+      "id": "hopes",
+      "type": "stringArray"
+    },
+    {
+      "id": "salahLevel",
+      "type": "enum"
+    },
+    {
+      "id": "niyah",
+      "type": "string"
+    },
+    {
+      "id": "email",
+      "type": "string"
+    },
+    {
+      "id": "notifyOptIn",
+      "type": "boolean"
+    },
+    {
+      "id": "trackingOptIn",
+      "type": "boolean"
+    },
+    {
+      "id": "personalPlan",
+      "type": "string"
+    }
+  ],
+  "events": [
+    "flow_started",
+    "flow_completed",
+    "variant_assigned",
+    "screen_impression",
+    "input_submitted",
+    "screen_skipped",
+    "quiz_answer",
+    "branch_decision",
+    "commit",
+    "permission_prompt_shown",
+    "permission_result",
+    "loader_completed",
+    "paywall_shown",
+    "purchase_intent",
+    "purchase_result"
+  ],
+  "products": [
+    {
+      "id": "sirat_annual",
+      "hasIntroOffer": true
+    },
+    {
+      "id": "sirat_pro_monthly",
+      "hasIntroOffer": false
+    }
+  ],
+  "capabilities": [
+    "haptics",
+    "notifications",
+    "tracking",
+    "purchase",
+    "restorePurchases"
+  ],
+  "budget": {
+    "ttiMs": 300,
+    "bundleKb": 350
+  },
+  "sdkVersion": "0.2.0",
+  "theme": {
+    "backgroundColor": "#f3efe6"
+  }
+}

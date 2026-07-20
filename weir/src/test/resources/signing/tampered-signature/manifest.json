@@ -1,0 +1,18 @@
+{
+  "specVersion": 3,
+  "bundleId": "2026-07-17-r1fixture",
+  "version": 2,
+  "files": [
+    {
+      "path": "flows/cob_intake.json",
+      "url": "https://cdn.example.com/bundles/2026-07-17-r1fixture/flows/cob_intake.json",
+      "sha256": "6a8228f3ce9bd712f12bbe49815031974977ffa2d44cbc0f73b0caeb79bfb543"
+    },
+    {
+      "path": "index.html",
+      "url": "https://cdn.example.com/bundles/2026-07-17-r1fixture/index.html",
+      "sha256": "d3afc599c03838097b657741fe339a3a1ad9322b27a98c59ec7df989e7c2127c"
+    }
+  ],
+  "signature": "LgUidmY24s302LG4yal8r5aGIFPONRz3/bOKnlRsxSuV07y4CcgtjNXLMpoVAWmVY2W6ljmnmKF/5J7Yo5xkCQ=="
+}

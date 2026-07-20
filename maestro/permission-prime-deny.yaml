@@ -1,0 +1,31 @@
+# Layer 3 (Android) — permission prime, deny path.
+#
+# Same as permission-prime-grant.yaml but taps the real system "Deny" (not the
+# in-app "Not now" skip, which never calls the bridge). Asserts the native
+# status banner reads notifications=denied. Requires an API 33+ emulator for the
+# runtime dialog to appear.
+appId: studio.aldric.weir.demo
+---
+- launchApp:
+    clearState: true
+    permissions:
+      notifications: unset
+- tapOn: "Start onboarding"
+- extendedWaitUntil:
+    visible: "Begin"
+    timeout: 8000
+- tapOn: "Begin"
+- extendedWaitUntil:
+    visible: "Enable notifications"
+    timeout: 5000
+- tapOn: "Enable notifications"
+- extendedWaitUntil:
+    visible: "Deny"
+    timeout: 5000
+- takeScreenshot: permission-deny-system-dialog
+- tapOn: "Deny"
+- extendedWaitUntil:
+    visible: ".*permissionResult.*"
+    timeout: 5000
+- assertVisible: ".*notifications=denied.*"
+- takeScreenshot: permission-deny-result

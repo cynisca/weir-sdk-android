@@ -1,0 +1,24 @@
+# Layer 3 (Android) — crash containment.
+#
+# Forces a real WebView main-frame load failure (not a fabricated one): the
+# "Start broken flow" button presents with a bundleRoot that doesn't exist, so
+# WeirAssetLoader serves nothing for the entry point and the WebView's
+# main-frame load fails. WeirWebView's WebViewClient.onReceivedError (main frame)
+# routes that to onFailure → WeirFlowResult.Failed, exactly as a real
+# content-load failure or onRenderProcessGone crash would.
+#
+# Asserts: the failure banner appears (native onFailure fired) and the host
+# process is still alive and interactive (WeirFlowActivity finished and returned
+# control) — the app degraded to a completion callback instead of crashing.
+appId: studio.aldric.weir.demo
+---
+- launchApp:
+    clearState: true
+- tapOn: "Start broken flow"
+- extendedWaitUntil:
+    visible: ".*onFailure.*"
+    timeout: 8000
+- assertVisible: ".*onFailure.*"
+# Host is alive and back in control — the home button is interactable again.
+- assertVisible: "Start onboarding"
+- takeScreenshot: crash-containment-result

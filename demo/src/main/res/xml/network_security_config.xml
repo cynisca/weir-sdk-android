@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Demo/E2E-only cleartext allowance. The conductor (packages/evals IS-3) and
+  local demo runs point Weir's ingest at a hermetic box on the host, reached
+  over cleartext http://10.0.2.2 (the Android emulator's host-loopback alias).
+  Production integrations (Niyat, CutOrBulk) talk https to a real box; this
+  exception is scoped to the box host only, never a blanket usesCleartextTraffic.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

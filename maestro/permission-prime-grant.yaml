@@ -1,0 +1,41 @@
+# Layer 3 (Android) — permission prime, grant path.
+#
+# Walks to the notification prime, taps "Enable notifications" to fire the real
+# POST_NOTIFICATIONS runtime dialog (API 33+), taps the system "Allow", and
+# asserts the native status banner (MainActivity, driven by onPermissionResult)
+# reads notifications=granted — the Android analogue of iOS's
+# permission-result-banner assertion.
+#
+# `permissions: notifications: unset` matters for the same reason as iOS:
+# Maestro auto-grants by default, which would skip the real system dialog and
+# pass without exercising the native path.
+#
+# Note: the POST_NOTIFICATIONS dialog only exists on API 33+. On an API <=32
+# emulator the SDK auto-grants (channel path) and the banner still reads
+# notifications=granted, with no dialog to tap — drop the two "Allow" steps on
+# such a device.
+appId: studio.aldric.weir.demo
+---
+- launchApp:
+    clearState: true
+    permissions:
+      notifications: unset
+- tapOn: "Start onboarding"
+- extendedWaitUntil:
+    visible: "Begin"
+    timeout: 8000
+- tapOn: "Begin"
+- extendedWaitUntil:
+    visible: "Enable notifications"
+    timeout: 5000
+- tapOn: "Enable notifications"
+- extendedWaitUntil:
+    visible: "Allow"
+    timeout: 5000
+- takeScreenshot: permission-grant-system-dialog
+- tapOn: "Allow"
+- extendedWaitUntil:
+    visible: ".*permissionResult.*"
+    timeout: 5000
+- assertVisible: ".*notifications=granted.*"
+- takeScreenshot: permission-grant-result

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Platform Material theme so the demo needs no AppCompat dependency;
+         MainActivity is a bare ComponentActivity. -->
+    <style name="Theme.WeirDemo" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>
