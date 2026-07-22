@@ -66,6 +66,7 @@ class WeirBundleResolutionTest {
         assertEquals(WeirBundleSource.REMOTE, resolved.source)
         // Promotion happened at the resolve boundary: active is the promoted dir.
         assertEquals(controller.bundleManager.activeBundleURL, resolved.root)
+        assertEquals(2, resolved.version) // the fixture manifest's own `"version": 2`
     }
 
     @Test
@@ -85,6 +86,7 @@ class WeirBundleResolutionTest {
         )
         assertEquals(WeirBundleSource.BUNDLED, resolved.source)
         assertEquals(host, resolved.root)
+        assertEquals(null, resolved.version) // bundled tier is never versioned
     }
 
     @Test
@@ -99,6 +101,7 @@ class WeirBundleResolutionTest {
         )
         assertEquals(WeirBundleSource.BUNDLED, resolved.source)
         assertEquals(host, resolved.root)
+        assertEquals(null, resolved.version) // bundled tier is never versioned
     }
 
     @Test
@@ -112,5 +115,6 @@ class WeirBundleResolutionTest {
         )
         assertEquals(WeirBundleSource.BUNDLED, resolved.source)
         assertEquals(fallback.activeBundleURL, resolved.root)
+        assertEquals(null, resolved.version) // bundled tier is never versioned
     }
 }

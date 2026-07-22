@@ -72,14 +72,28 @@ object HealthEvent {
             fields = mapOf("reason" to JsonPrimitive(reason)),
         )
 
-    fun bundleSource(flowId: String, sessionId: String, seq: Int, source: String): EventParams =
-        make(
+    /**
+     * @param source `"bundled"` (host-supplied or embedded bundle) or
+     *   `"remote"` (a promoted remote bundle, per [studio.aldric.weir.persistence.WeirBundleResolution]).
+     * @param version the resolved bundle's monotonic version (per
+     *   `WeirBundleResolution.resolve`'s `version`), when known. Optional and
+     *   backward-compatible: omitted entirely (not sent as `null`) when
+     *   `null`, so older servers that don't know this field still see
+     *   exactly the payload shape they always have.
+     */
+    fun bundleSource(flowId: String, sessionId: String, seq: Int, source: String, version: Int? = null): EventParams {
+        val fields = buildMap<String, JsonElement> {
+            put("source", JsonPrimitive(source))
+            if (version != null) put("version", JsonPrimitive(version))
+        }
+        return make(
             EventType.BUNDLE_SOURCE,
             flowId = flowId,
             sessionId = sessionId,
             seq = seq,
-            fields = mapOf("source" to JsonPrimitive(source)),
+            fields = fields,
         )
+    }
 
     /**
      * Native queue-flush telemetry, emitted by `EventQueue.triggerFlush` after

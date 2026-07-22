@@ -226,6 +226,19 @@ class BundleManager(
         get() = synchronized(lock) { _activeBundleURL }
 
     /**
+     * Monotonic version of whatever [activeBundleURL] currently resolves to —
+     * 0 before any remote bundle has ever promoted (embedded/placeholder
+     * bundle, no manifest to version), otherwise the last-promoted
+     * `BundleUpdateManifest.version`. Stamped onto `health_bundle_source`
+     * telemetry ([HealthEvent.bundleSource]) alongside the `REMOTE` tier via
+     * [WeirBundleResolution.resolve], so adoption can be tracked
+     * per-version, not just per-tier. Mirrors iOS
+     * `BundleManager.activeBundleVersion`.
+     */
+    val activeBundleVersion: Int
+        get() = synchronized(lock) { activeVersion }
+
+    /**
      * Whether [activeBundleURL] actually contains a spec for [flowId] — used at
      * the present boundary to decide whether a promoted remote bundle is safe
      * to render from. Two on-disk shapes recognized: a flat `manifest.json`

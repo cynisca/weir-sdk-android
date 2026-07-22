@@ -20,7 +20,16 @@ enum class WeirBundleSource(val raw: String) {
  */
 object WeirBundleResolution {
 
-    data class Resolved(val root: File, val source: WeirBundleSource)
+    /**
+     * [version] is the resolved bundle's monotonic version — only meaningful
+     * alongside [WeirBundleSource.REMOTE] (the last-promoted
+     * `BundleUpdateManifest.version`, via [BundleManager.activeBundleVersion]);
+     * `null` for [WeirBundleSource.BUNDLED], which isn't versioned by the
+     * manifest scheme at all (host-supplied and embedded/placeholder bundles
+     * have no manifest). Stamped onto `health_bundle_source` telemetry so
+     * adoption can be tracked per-version within the `REMOTE` tier.
+     */
+    data class Resolved(val root: File, val source: WeirBundleSource, val version: Int? = null)
 
     /**
      * Resolution order (M4):
@@ -47,7 +56,11 @@ object WeirBundleResolution {
         if (updateController != null) {
             updateController.bundleManager.promoteStagedUpdateIfAny()
             if (updateController.bundleManager.activeBundleContainsFlow(flowId)) {
-                return Resolved(updateController.bundleManager.activeBundleURL, WeirBundleSource.REMOTE)
+                return Resolved(
+                    updateController.bundleManager.activeBundleURL,
+                    WeirBundleSource.REMOTE,
+                    updateController.bundleManager.activeBundleVersion,
+                )
             }
         }
         if (hostBundleRoot != null) {

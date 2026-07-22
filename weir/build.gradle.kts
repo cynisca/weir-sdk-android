@@ -9,7 +9,7 @@ plugins {
 // source dependency) resolves this module as — "studio.aldric:weir" — not
 // just the Maven-publish coordinate below. Keep the two in sync.
 group = "studio.aldric"
-version = "0.1.0"
+version = "0.1.1"
 
 android {
     namespace = "studio.aldric.weir"

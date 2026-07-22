@@ -64,6 +64,11 @@ class WeirWebView(
     hapticEngine: HapticEngine? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val bundleSource: String = "bundled",
+    /** The resolved bundle's monotonic version, per `WeirBundleResolution
+     *  .resolve`'s `version` — only meaningful alongside `bundleSource ==
+     *  "remote"`, `null` for `"bundled"`. Reported verbatim in
+     *  `health_bundle_source` below. */
+    private val bundleVersion: Int? = null,
     private val onComplete: ((List<WeirVariable>) -> Unit)? = null,
     private val onDismiss: ((String) -> Unit)? = null,
     private val onFailure: ((Throwable) -> Unit)? = null,
@@ -134,6 +139,7 @@ class WeirWebView(
                 sessionId = healthSessionId,
                 seq = healthSeq.next(),
                 source = bundleSource,
+                version = bundleVersion,
             ),
         )
         webView.loadUrl(assetLoader.entryUrl)

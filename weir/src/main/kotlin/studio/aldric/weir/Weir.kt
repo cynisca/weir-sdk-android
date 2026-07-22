@@ -353,6 +353,7 @@ object Weir {
             hapticEngine = hapticEngine,
             scope = scope,
             bundleSource = resolved.source.raw,
+            bundleVersion = resolved.version,
             onComplete = { variables -> finish(WeirFlowResult.Completed(variables)) },
             onDismiss = { reason -> finish(WeirFlowResult.Dismissed(reason)) },
             onFailure = { error -> finish(WeirFlowResult.Failed(error)) },
