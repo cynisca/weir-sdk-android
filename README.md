@@ -1,6 +1,6 @@
 # weir-sdk-android — Weir Android SDK
 
-Kotlin port of `sdk-ios/`. This repo is a **private split** of the `sdk-android/`
+Kotlin port of `sdk-ios/`. This repo is a split of the `sdk-android/`
 directory from the Weir monorepo, mirroring the precedent set by
 [`weir-sdk-ios`](https://github.com/cynisca/weir-sdk-ios): a standalone,
 independently buildable Gradle project that consuming apps pin by git URL/tag
@@ -25,7 +25,7 @@ it is not published and is not part of the SDK's public surface.
 ## Build & test standalone
 
 ```sh
-git clone git@github.com:cynisca/weir-sdk-android.git
+git clone https://github.com/cynisca/weir-sdk-android.git
 cd weir-sdk-android
 echo "sdk.dir=/path/to/Android/sdk" > local.properties   # or export ANDROID_HOME
 ./gradlew :weir:assembleRelease --no-daemon    # produces the AAR
@@ -37,14 +37,44 @@ monorepo — that's the point of the split.
 
 ## Consuming this SDK from an app
 
-**This SDK is not published to a public Maven repository yet** (no Maven
-Central / no company Maven host). Until that lands, an outside integrator has
-two honest options:
+This SDK is not published to Maven Central. There are two supported ways to
+pull it into an app: a Gradle composite build straight off the git tag, or
+[JitPack](https://jitpack.io), which builds tagged commits of any public
+GitHub repo on demand and serves them as normal Maven artifacts.
 
-### Option A — Gradle composite build via git URL (recommended)
+### Option A — JitPack (recommended for most consumers)
 
-Include the SDK as a source dependency straight from the private git repo, no
-local publish step, no Maven Local involved. In your app's `settings.gradle.kts`:
+Add the JitPack repository, then depend on the tag directly — no local clone,
+no composite build, works from any CI runner with normal internet access.
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven(url = "https://jitpack.io")
+    }
+}
+```
+
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation("com.github.cynisca.weir-sdk-android:weir:0.1.1")
+}
+```
+
+JitPack builds this multi-module repo with `jitpack.yml` (JDK 17) and exposes
+the `:weir` module under group `com.github.cynisca.weir-sdk-android`, artifact
+`weir`. The first resolve of a given tag triggers a build on JitPack's side
+and can take a few minutes; subsequent resolves are cached. Check build status
+at `https://jitpack.io/com/github/cynisca/weir-sdk-android/weir/0.1.1/build.log`.
+
+### Option B — Gradle composite build via git URL
+
+Include the SDK as a source dependency straight from this repo, no local
+publish step, no Maven Local involved. In your app's `settings.gradle.kts`:
 
 ```kotlin
 sourceControl {
@@ -59,16 +89,14 @@ Then depend on it normally in `app/build.gradle.kts`:
 ```kotlin
 dependencies {
     implementation("studio.aldric:weir") {
-        version { strictly("0.1.0") } // pins the `0.1.0` tag
+        version { strictly("0.1.1") } // pins the `0.1.1` tag
     }
 }
 ```
 
 Gradle checks out the tagged commit, builds `:weir` as an included build, and
 wires it into your dependency graph — no manual clone, no `mavenLocal()`, and
-no stale local publish to go out of sync. Requires the consuming machine/CI
-runner to have git-over-HTTPS or SSH read access to this **private** repo
-(same access model as `weir-sdk-ios`'s SwiftPM pin).
+no stale local publish to go out of sync.
 
 **Local SDK-development override:** to iterate on the SDK and an app at the
 same time, temporarily swap the `gitRepository` block above for:
@@ -84,19 +112,18 @@ includeBuild("/absolute/path/to/weir-sdk-android") {
 Do not commit this override — it's a local-only path, exactly like the
 commented `path:` override in CutOrBulk's SwiftPM `project.yml`.
 
-### Option B — `git clone` + `publishToMavenLocal` (interim fallback)
+### Option C — `git clone` + `publishToMavenLocal` (manual fallback)
 
-If your Gradle setup can't use `sourceControl`/composite builds (older Gradle,
-or a build topology that doesn't tolerate included builds), the fallback is
-manual:
+If your Gradle setup can't use JitPack or `sourceControl`/composite builds,
+the fallback is manual:
 
 ```sh
-git clone --branch 0.1.0 git@github.com:cynisca/weir-sdk-android.git
+git clone --branch 0.1.1 https://github.com/cynisca/weir-sdk-android.git
 cd weir-sdk-android
 ./gradlew :weir:publishToMavenLocal --no-daemon
 ```
 
-This publishes `studio.aldric:weir:0.1.0` into `~/.m2/repository`, i.e. your
+This publishes `studio.aldric:weir:0.1.1` into `~/.m2/repository`, i.e. your
 machine's Maven Local cache. Then in the consuming app:
 
 ```kotlin
@@ -113,14 +140,13 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("studio.aldric:weir:0.1.0")
+    implementation("studio.aldric:weir:0.1.1")
 }
 ```
 
-This is what the first Weir-onboarded Android app (Niyat) uses today. It
-works, but it is machine-local and easy to go stale (forget to re-publish
-after pulling a new tag) — prefer Option A for anything beyond quick local
-iteration.
+It works, but it is machine-local and easy to go stale (forget to re-publish
+after pulling a new tag) — prefer Option A or B for anything beyond quick
+local iteration.
 
 ## Layout
 
@@ -161,3 +187,7 @@ truth for SDK *development*; this repo is the distribution artifact history
 `weir-sdk-ios`. Do not hand-edit this repo directly for feature work — changes
 should land in the monorepo's `sdk-android/` and get re-synced here as part of
 a tagged release.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
