@@ -69,7 +69,7 @@ publishing {
         create<MavenPublication>("release") {
             groupId = "studio.aldric"
             artifactId = "weir"
-            version = "0.1.0"
+            version = project.version.toString()
 
             // The `release` software component only exists after AGP has
             // finished configuring the variant, hence afterEvaluate. Wiring it
