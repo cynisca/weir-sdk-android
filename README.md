@@ -61,15 +61,18 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.cynisca.weir-sdk-android:weir:0.1.1")
+    implementation("com.github.cynisca:weir-sdk-android:0.1.1")
 }
 ```
 
-JitPack builds this multi-module repo with `jitpack.yml` (JDK 17) and exposes
-the `:weir` module under group `com.github.cynisca.weir-sdk-android`, artifact
-`weir`. The first resolve of a given tag triggers a build on JitPack's side
-and can take a few minutes; subsequent resolves are cached. Check build status
-at `https://jitpack.io/com/github/cynisca/weir-sdk-android/weir/0.1.1/build.log`.
+JitPack builds this repo with `jitpack.yml` (JDK 17) via `publishToMavenLocal`
+on the `:weir` module and exposes it as a single artifact,
+`com.github.cynisca:weir-sdk-android`, an AAR with the `:weir` module's
+dependencies. The first resolve of a given tag triggers a build on JitPack's
+side and can take a minute or two; subsequent resolves are cached. Check build
+status at `https://jitpack.io/api/builds/com.github.cynisca/weir-sdk-android/0.1.1`,
+or the raw log at
+`https://jitpack.io/com/github/cynisca/weir-sdk-android/0.1.1/build.log`.
 
 ### Option B — Gradle composite build via git URL
 
