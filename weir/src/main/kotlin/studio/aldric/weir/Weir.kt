@@ -3,26 +3,23 @@ package studio.aldric.weir
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import studio.aldric.weir.billing.NoopPurchaseProvider
 import studio.aldric.weir.billing.PurchaseProviding
 import studio.aldric.weir.bridge.EventSink
-import studio.aldric.weir.bridge.HapticEngine
+import studio.aldric.weir.bridge.HealthEvent
+import studio.aldric.weir.bridge.HealthSeq
 import studio.aldric.weir.persistence.BundleManager
-import studio.aldric.weir.persistence.EventQueue
+import studio.aldric.weir.persistence.ConfigFetchGatingQuery
+import studio.aldric.weir.persistence.RegistryGating
 import studio.aldric.weir.persistence.ProcessLifecycleForegroundTrigger
-import studio.aldric.weir.persistence.WeirBundleResolution
 import studio.aldric.weir.persistence.WeirIngestConfig
+import studio.aldric.weir.persistence.WeirDeviceContext
 import studio.aldric.weir.persistence.WeirUpdateConfig
 import studio.aldric.weir.persistence.WeirUpdateController
-import studio.aldric.weir.bridge.PermissionRequester
-import studio.aldric.weir.bridge.PermissionStatus
-import studio.aldric.weir.bridge.PermissionType
-import studio.aldric.weir.bridge.UnavailablePermissionRequester
+import studio.aldric.weir.persistence.WeirEmbeddedFixture
+import studio.aldric.weir.registry.ComponentRegistry
 import studio.aldric.weir.bridge.WeirVariable
-import studio.aldric.weir.webview.WeirWebView
+import studio.aldric.weir.ui.WeirFlow
 import java.io.File
 
 /**
@@ -30,56 +27,26 @@ import java.io.File
  * `WeirFlowResult` enum (`sdk-ios/Sources/Weir/Weir.swift`).
  */
 sealed class WeirFlowResult {
-    /** The flow reached its end and handed back its typed variables (the
-     *  `complete` bridge method). */
+    /** The flow reached its end and handed back its typed variables. */
     data class Completed(val variables: List<WeirVariable>) : WeirFlowResult()
 
     /** The user backed out before completion, with the flow-supplied reason
      *  (the `dismiss` bridge method). */
     data class Dismissed(val reason: String) : WeirFlowResult()
 
-    /** The flow could not run to a JS-driven outcome at all — navigation
-     *  failure or content-process crash. Crash containment means this fires
-     *  instead of taking the host down, so the host can fall back to native. */
+    /** The native renderer could not decode or run the flow. */
     data class Failed(val error: Throwable) : WeirFlowResult()
 }
 
-/**
- * Handle to a presentation started by [Weir.present]. Exposes the hosted
- * [WeirWebView] (the View a Phase 3 Activity/Compose host adds to its
- * hierarchy) and a [dismiss] that fires the completion once as
- * [WeirFlowResult.Dismissed].
- */
-class WeirPresentation internal constructor(
-    val host: WeirWebView,
-    private val finish: (WeirFlowResult) -> Unit,
-) {
-    /** Dismisses the flow as if the user backed out. Safe to call after the
-     *  flow already completed/dismissed/failed — completion fires only once. */
-    fun dismiss(reason: String = "host_dismissed") {
-        finish(WeirFlowResult.Dismissed(reason))
-    }
-}
-
-/**
- * Public entry point for presenting a Weir flow. Android analogue of the Swift
- * `Weir` enum's `present(...)`.
- *
- * Phase 1 provides the reusable View-level core: it constructs the
- * [WeirWebView] host, wires the bridge callbacks into a single once-only
- * [WeirFlowResult] completion, and returns a [WeirPresentation] whose
- * `host.webView` a caller adds to its own view hierarchy. The full
- * `Activity`-backed modal + real Activity permission handling is Phase 3,
- * which wraps this core.
- */
+/** Public entry point for configuring and presenting native Weir flows. */
 object Weir {
 
     /** Default SharedPreferences store name for [WeirIdentity]-backed identity. */
     const val PREFS_NAME = "weir.sdk.prefs"
 
-    /** In-flight guard (R2-R2): true while a [presentActivity] flow is live, so a
+    /** In-flight guard (R2-R2): true while a [present] flow is live, so a
      *  second rapid call (a double-tap, a re-entrant present) can't stack two
-     *  overlapping flow Activities — two live bridges/eventSinks on screen at
+     *  overlapping flow Activities and event sinks on screen at
      *  once. Cleared when the presentation delivers its terminal result. */
     private val presentationInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -88,6 +55,16 @@ object Weir {
     @androidx.annotation.VisibleForTesting
     internal fun resetPresentationGuardForTest() {
         presentationInFlight.set(false)
+    }
+
+    /** TEST ONLY: seeds [appContext] and clears the cached fallback manager so
+     *  a test can exercise [fallbackBundleManager]'s embedded-fixture path
+     *  without driving a full [present]/[configure] call. Mirrors
+     *  [resetPresentationGuardForTest]'s pattern. */
+    @androidx.annotation.VisibleForTesting
+    internal fun configureEmbeddedFixtureForTest(context: Context) {
+        appContext = context.applicationContext
+        synchronized(this) { _fallbackBundleManager = null }
     }
 
     // ---- Remote flow-bundle delivery (plan §3) — parity with iOS `Weir` ----
@@ -99,17 +76,49 @@ object Weir {
         private set
 
     /** Shared no-remote-key [BundleManager] backing the embedded/placeholder
-     *  tier of [WeirBundleResolution.resolve] for callers that pass no
-     *  `bundleRoot` and have no remote update configured either. A bare,
+     *  tier of config resolution for callers with no config root and no
+     *  remote update configured either. A bare,
      *  keyless manager already fails closed on its own. Lazily created so a
      *  host that never uses remote delivery pays nothing. */
     @Volatile
     private var _fallbackBundleManager: BundleManager? = null
 
-    private fun fallbackBundleManager(): BundleManager =
+    /**
+     * Process-wide app context captured at [configure]/[present] so the SDK's
+     * baked-in embedded fixture can be materialized from assets on first
+     * fallback access. Android has no SPM `Bundle.module`; raw assets live
+     * behind `AssetManager`, which needs a `Context`. `null` (before any entry
+     * point has run) leaves the fallback on the empty placeholder — fail safe,
+     * never crash.
+     */
+    @Volatile
+    private var appContext: Context? = null
+
+    internal fun fallbackBundleManager(): BundleManager =
         _fallbackBundleManager ?: synchronized(this) {
-            _fallbackBundleManager ?: BundleManager().also { _fallbackBundleManager = it }
+            _fallbackBundleManager ?: createFallbackBundleManager().also { _fallbackBundleManager = it }
         }
+
+    /**
+     * Builds the no-remote, no-host-key [BundleManager] used as config
+     * resolution's last tier. When an app context is available, the SDK's own
+     * baked-in embedded fixture ([WeirEmbeddedFixture]) is materialized to disk
+     * and used as the [BundleManager]'s embedded root, so a host that supplies
+     * no config and no remote still renders a real flow instead of the empty
+     * placeholder (the iOS parity gap — `sdk-ios` resolves the same fixture via
+     * SPM `Bundle.module`). If no context is available yet (no entry point has
+     * run) or the asset copy fails, this falls back to a bare [BundleManager]
+     * — the empty placeholder — and never throws.
+     */
+    private fun createFallbackBundleManager(): BundleManager {
+        val context = appContext ?: return BundleManager()
+        val embeddedDir = File(context.filesDir, "weir/embedded-fixture")
+        return if (WeirEmbeddedFixture.materialize(context, embeddedDir) && embeddedDir.isDirectory) {
+            BundleManager(embeddedBundleRoot = embeddedDir)
+        } else {
+            BundleManager()
+        }
+    }
 
     /**
      * Enables remote flow-bundle delivery (plan §3): fetches a manifest in the
@@ -125,22 +134,128 @@ object Weir {
      * @param embeddedBundleRoot optional build-time-embedded baseline bundle
      *   the controller's [BundleManager] falls back to (the Android analogue of
      *   iOS's SPM `Bundle.module` resolution, which the host supplies here).
+     * @param eventSink optional structured-diagnostics sink (Phase 3): when
+     *   set, every manifest fetch/verify/stage/promote this controller does —
+     *   in the background, independent of any single [present] call — emits a
+     *   `health_manifest_*`/`health_remote_*` event here (see [HealthEvent]).
+     *   `null` (the default) is silent, matching pre-Phase-3 behavior. Pass the
+     *   same [EventSink] (or an [studio.aldric.weir.bridge.CompositeEventSink]
+     *   tee) a host also uses for [present]'s `eventSink` so both product and
+     *   health telemetry land in one place.
      */
     fun configure(
+        context: Context,
         updates: WeirUpdateConfig,
         embeddedBundleRoot: File? = null,
+        eventSink: EventSink? = null,
     ) {
+        val appContext = context.applicationContext
+        this.appContext = appContext
         val controller = WeirUpdateController(
             config = updates,
             embeddedBundleRoot = embeddedBundleRoot,
             foregroundTrigger = ProcessLifecycleForegroundTrigger(),
+            eventSink = eventSink,
+            gatingProvider = { gatingQuery(appContext) },
         )
         updateController = controller
         controller.start()
     }
 
+    /**
+     * RC-P0 (gating protocol v2, release-gate re-review): the base trio
+     * (`appVersion`/`sdkVersion`/`platform`) is ALWAYS sent — an app with
+     * zero registered custom components still needs its `sdkVersion` floor
+     * enforced (the prior all-5-or-none contract sent NO gating at all in
+     * that case, silently skipping floor enforcement too). The registry
+     * pair rides along only when [ComponentRegistry] actually has a
+     * generated registry installed; [RegistryGating] makes a partial pair
+     * unrepresentable, not merely disallowed by a runtime check (round-2
+     * re-review: matches `sdk-react-native`'s `ConfigFetchGating` TS type,
+     * the cross-platform reference for this strictness). Extracted from
+     * [configure]'s `gatingProvider` closure so it's directly unit-testable
+     * (a real network fetch is not — see `WeirGatingQueryTest`).
+     */
+    internal fun gatingQuery(appContext: Context): ConfigFetchGatingQuery {
+        val registryInfo = ComponentRegistry.registryGatingInfo()
+        val registry = registryInfo?.let { (manifestVersion, hash) -> RegistryGating.Registered(manifestVersion, hash) }
+            ?: RegistryGating.Unregistered
+        return ConfigFetchGatingQuery(
+            appVersion = WeirDeviceContext.current(appContext, WeirSdk.WEIR_SDK_VERSION).appVersion,
+            sdkVersion = WeirSdk.WEIR_SDK_VERSION,
+            platform = "android",
+            registry = registry,
+        )
+    }
+
     fun defaultPrefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    // ---- App-owned structured diagnostics (Phase 3) ----
+    //
+    // The SDK never sees the host app's own feature-flag resolution or
+    // bucketing decision — that logic lives entirely in the host adapter (e.g.
+    // CutOrBulk's/pokestealordeal's remote-config or Firestore read). These
+    // three entry points let that adapter still emit the exact same
+    // machine-readable `health_flag_off` / `health_flag_fetch_failed` /
+    // `health_native_bucket` shape [HealthEvent]'s SDK-owned types use, on a
+    // session this object owns so callers never have to manage their own
+    // sessionId/seq.
+    //
+    // These carry the host's REAL flowId, unlike the SDK-owned manifest/remote
+    // types which ride the synthetic [HealthEvent.UPDATE_SESSION_FLOW_ID]. That
+    // asymmetry is deliberate: a manifest URL is not scoped to one flow, but a
+    // feature flag and a bucketing decision are per-flow facts, and attributing
+    // them to the real flow is what makes "how many users were gated out of
+    // cob_intake" answerable. Matches iOS's WeirDiagnostics entry points, which
+    // take flowId for the same reason — the two platforms must emit the same
+    // shape or a cross-platform query returns different answers per OS.
+
+    private val diagnosticHealthSessionId: String = java.util.UUID.randomUUID().toString()
+    private val diagnosticHealthSeq = HealthSeq()
+
+    /** The host app's feature flag resolved off — the user was gated out of
+     *  the Weir-driven flow before it ever rendered. [flagSource] is a short
+     *  label for where the flag came from, e.g. `"remote-config"`,
+     *  `"firestore"`, `"build-settings"` — never the flag's own key/value. */
+    fun reportFlagOff(eventSink: EventSink, flowId: String, flagSource: String) {
+        eventSink.append(
+            HealthEvent.flagOff(
+                flowId = flowId,
+                sessionId = diagnosticHealthSessionId,
+                seq = diagnosticHealthSeq.next(),
+                flagSource = flagSource,
+            ),
+        )
+    }
+
+    /** The host app couldn't read its feature flag and fell back to a default.
+     *  [reason] is a short safe code the host chooses, never a raw exception
+     *  message that could carry unrelated user/request data. */
+    fun reportFlagFetchFailed(eventSink: EventSink, flowId: String, flagSource: String, reason: String) {
+        eventSink.append(
+            HealthEvent.flagFetchFailed(
+                flowId = flowId,
+                sessionId = diagnosticHealthSessionId,
+                seq = diagnosticHealthSeq.next(),
+                flagSource = flagSource,
+                reason = reason,
+            ),
+        )
+    }
+
+    /** The host app's own bucketing sent this user to the native (non-Weir)
+     *  onboarding arm. [arm] is the host's own arm label. */
+    fun reportNativeBucket(eventSink: EventSink, flowId: String, arm: String) {
+        eventSink.append(
+            HealthEvent.nativeBucket(
+                flowId = flowId,
+                sessionId = diagnosticHealthSessionId,
+                seq = diagnosticHealthSeq.next(),
+                arm = arm,
+            ),
+        )
+    }
 
     // ---- Identity passthrough (mirrors the iOS `Weir.resolvedVariant` etc.) ----
 
@@ -153,214 +268,54 @@ object Weir {
     fun stableUserId(context: Context): String =
         WeirIdentity.stableUserId(defaultPrefs(context))
 
-    /**
-     * Full Activity-backed presentation (plan §8 Phase 3, item 1) — the Android
-     * analogue of iOS `Weir.present(from: presentingViewController)`. Launches
-     * [WeirFlowActivity], which hosts the flow full-screen, drives real runtime
-     * permissions via [ActivityPermissionRequester], and delivers the terminal
-     * [WeirFlowResult] to [completion] exactly once (bridge complete/dismiss,
-     * crash-containment failure, or the user backing out all route through the
-     * same once-gate).
-     *
-     * The completion/eventSink/purchaseProvider/callback graph can't ride an
-     * `Intent` (only primitives/Parcelables can), so it's stashed in the
-     * in-process [WeirPresentationRegistry] under a token and the Intent carries
-     * only that token — see the registry's doc comment.
-     *
-     * The reusable View-level core is still [present] below: this method builds
-     * the flow host by calling it with the Activity as `Context` and the
-     * Activity-backed permission requester injected. A Compose host (Phase 4 /
-     * Niyat) wraps that same core directly — see [present]'s doc comment.
-     *
-     * @param backgroundColor first-paint background as an ARGB int; when null,
-     *   the flow bundle's manifest.json `theme.backgroundColor` is used, else a
-     *   dark default. Set as the window background before the WebView paints, so
-     *   there's no white flash.
-     */
-    fun presentActivity(
+    /** Launches the native Compose renderer in a full-screen Activity. */
+    fun present(
         context: Context,
         flowId: String,
-        bundleRoot: File? = null,
+        configRoot: File? = null,
         userId: String? = null,
         purchaseProvider: PurchaseProviding = NoopPurchaseProvider(),
         eventSink: EventSink,
         ingest: WeirIngestConfig? = null,
-        hapticEngine: HapticEngine? = null,
-        backgroundColor: Int? = null,
         systemBarStyle: WeirSystemBarStyle = WeirSystemBarStyle.Default,
-        onPermissionResult: ((PermissionType, PermissionStatus) -> Unit)? = null,
-        onPurchaseResult: ((String) -> Unit)? = null,
         completion: (WeirFlowResult) -> Unit,
     ) {
-        // R2-R2: reject a re-entrant present rather than stacking a second flow
-        // Activity over the live one. The second caller still gets a terminal
-        // result (a dismissal) so its completion never silently hangs.
+        appContext = context.applicationContext
         if (!presentationInFlight.compareAndSet(false, true)) {
             completion(WeirFlowResult.Dismissed("already_presenting"))
             return
         }
-        // Clear the guard exactly once, when this presentation ends.
         val guardedCompletion: (WeirFlowResult) -> Unit = { result ->
             presentationInFlight.set(false)
             completion(result)
         }
-        val request = WeirActivityPresentationRequest(
-            backgroundColor = backgroundColor,
+        val request = WeirPresentationRequest(
             systemBarStyle = systemBarStyle,
-            build = { activity, permissionRequester, finish ->
-                // Reuse the View-level core (below): it runs the OTA resolution
-                // boundary and constructs the WeirWebView + bridge, now with the
-                // Activity as Context and the real Activity-backed requester.
-                present(
-                    context = activity,
+            content = { permissionRequester, finish ->
+                WeirFlow(
                     flowId = flowId,
-                    bundleRoot = bundleRoot,
+                    configRoot = configRoot,
                     userId = userId,
                     purchaseProvider = purchaseProvider,
+                    permissionRequester = permissionRequester,
                     eventSink = eventSink,
                     ingest = ingest,
-                    permissionRequester = permissionRequester,
-                    hapticEngine = hapticEngine,
-                    onPermissionResult = onPermissionResult,
-                    onPurchaseResult = onPurchaseResult,
-                    completion = finish,
+                    onResult = finish,
                 )
             },
             completion = guardedCompletion,
         )
         val token = WeirPresentationRegistry.register(request)
-
         val intent = Intent(context, WeirFlowActivity::class.java).apply {
             putExtra(WeirFlowActivity.EXTRA_TOKEN, token)
-            bundleRoot?.let { putExtra(WeirFlowActivity.EXTRA_BUNDLE_ROOT, it.absolutePath) }
-            // A non-Activity Context (Application/Service) can't start an
-            // Activity without its own task.
             if (context !is android.app.Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         try {
             context.startActivity(intent)
-        } catch (e: Exception) {
-            // Never leave the guard stuck if the Activity couldn't even start —
-            // unregister, clear, and surface the failure to the caller.
+        } catch (error: Exception) {
             WeirPresentationRegistry.remove(token)
             presentationInFlight.set(false)
-            completion(WeirFlowResult.Failed(e))
-            return
+            completion(WeirFlowResult.Failed(error))
         }
-    }
-
-    /**
-     * Builds and wires a flow host for [flowId] over [bundleRoot], delivering
-     * the outcome to [completion] exactly once. The returned
-     * [WeirPresentation.host] `.webView` is the View to attach; call
-     * [WeirWebView.load] once attached (or let the Phase 3 host do it).
-     *
-     * This is the **reusable View-level core** — [presentActivity] wraps it for
-     * the standard Activity modal, and a **Compose host** (Phase 4 / Niyat)
-     * wraps it directly, e.g.:
-     *
-     * ```
-     * val presentation = remember {
-     *     Weir.present(context, flowId = "niyat_onboarding", eventSink = queue) { result -> … }
-     * }
-     * AndroidView(factory = { presentation.host.webView.also { presentation.host.load() } })
-     * ```
-     *
-     * Keeping this public and Context-based (not Activity-based) is the
-     * deliberate Compose seam: nothing here needs an Activity except the real
-     * [PermissionRequester], which the caller injects. A Compose host that wants
-     * live permissions passes an [ActivityPermissionRequester] built from its
-     * own `rememberLauncherForActivityResult`; one that doesn't leaves the
-     * honest [UnavailablePermissionRequester] default.
-     */
-    fun present(
-        context: Context,
-        flowId: String,
-        /**
-         * Host-supplied bundle root. Now the **middle tier** of the M4
-         * resolution order (see [WeirBundleResolution.resolve]): a promoted
-         * remote bundle that actually contains [flowId] takes precedence, and
-         * `null` (no static bundle) falls through to the embedded/placeholder
-         * tier. Existing callers that always pass a concrete [File] behave
-         * exactly as before when no remote update is configured.
-         */
-        bundleRoot: File? = null,
-        userId: String? = null,
-        purchaseProvider: PurchaseProviding = NoopPurchaseProvider(),
-        eventSink: EventSink,
-        /**
-         * When set, and when [eventSink] is (or wraps down to) a plain
-         * [EventQueue], attaches a live ingest endpoint to it — see
-         * [EventQueue.configureIngest]. `null` (the default) leaves the queue
-         * exactly as before: durable on-disk only, no network flush. If
-         * [eventSink] is some other [EventSink] entirely (a tee, a host sink),
-         * this is a no-op — the host owns wiring its own ingest in that case
-         * (calling `configureIngest` on its `EventQueue` directly).
-         */
-        ingest: WeirIngestConfig? = null,
-        permissionRequester: PermissionRequester = UnavailablePermissionRequester,
-        hapticEngine: HapticEngine? = null,
-        scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-        onPermissionResult: ((PermissionType, PermissionStatus) -> Unit)? = null,
-        onPurchaseResult: ((String) -> Unit)? = null,
-        completion: (WeirFlowResult) -> Unit,
-    ): WeirPresentation {
-        // Live ingest wiring (docs/instrumentation-workstream.md §1): only
-        // meaningful when the caller's eventSink is a plain EventQueue — see the
-        // `ingest` param's doc comment. A host that composes eventSink as a tee
-        // never fires this branch and wires configureIngest itself.
-        val ingestQueue = eventSink as? EventQueue
-        if (ingest != null && ingestQueue != null) {
-            ingestQueue.configureIngest(ingest, foregroundTrigger = ProcessLifecycleForegroundTrigger())
-        }
-
-        // completion fires exactly once, from whichever terminal bridge signal
-        // (complete/dismiss) or crash-containment failure lands first — parity
-        // with the iOS `didFinish` guard.
-        var finished = false
-        val finish: (WeirFlowResult) -> Unit = { result ->
-            if (!finished) {
-                finished = true
-                completion(result)
-                // Flush trigger #2 (docs/instrumentation-workstream.md §1): flow
-                // completion. No-ops if `ingest` was never configured.
-                ingestQueue?.triggerFlush()
-            }
-        }
-
-        // M3/M4 resolution boundary (parity with iOS `Weir.present`): promotes
-        // any staged remote update and decides where this presentation's bundle
-        // root actually comes from — promoted-remote-if-contains-flow →
-        // host-supplied → embedded/placeholder. Must happen here, before the
-        // WebView host (and its asset loader) is constructed, never after. The
-        // resolved `source` drives the `health_bundle_source` event WeirWebView
-        // emits (via the existing HealthEvent.bundleSource builder).
-        val resolved = WeirBundleResolution.resolve(
-            flowId = flowId,
-            hostBundleRoot = bundleRoot,
-            updateController = updateController,
-            fallbackBundleManager = fallbackBundleManager(),
-        )
-
-        val host = WeirWebView(
-            context = context,
-            flowId = flowId,
-            bundleRoot = resolved.root,
-            userId = userId,
-            purchaseProvider = purchaseProvider,
-            eventSink = eventSink,
-            permissionRequester = permissionRequester,
-            hapticEngine = hapticEngine,
-            scope = scope,
-            bundleSource = resolved.source.raw,
-            bundleVersion = resolved.version,
-            onComplete = { variables -> finish(WeirFlowResult.Completed(variables)) },
-            onDismiss = { reason -> finish(WeirFlowResult.Dismissed(reason)) },
-            onFailure = { error -> finish(WeirFlowResult.Failed(error)) },
-            onPermissionResult = onPermissionResult,
-            onPurchaseResult = onPurchaseResult,
-        )
-
-        return WeirPresentation(host, finish)
     }
 }

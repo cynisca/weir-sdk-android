@@ -1,0 +1,1 @@
+{"specVersion":4,"id":"slider","name":"Slider specimen","variables":[{"id":"focus","type":"number","default":45}],"screens":[{"id":"s","type":"slider","title":"Set a focus window","subtitle":"Tune the duration to something sustainable.","variable":"focus","min":15,"max":120,"step":15,"default":45,"unit":"min","cta":{"label":"Use this window"}}]}

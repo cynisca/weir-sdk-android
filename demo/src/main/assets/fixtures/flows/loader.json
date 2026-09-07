@@ -1,0 +1,1 @@
+{"specVersion":4,"id":"loader","name":"Loader specimen","screens":[{"id":"s","type":"loader","title":"Assembling your route","durationMs":2200,"messages":["Reading your choices","Balancing the pace","Marking the first step"],"computes":["routeScore","recommendedPace"]}]}

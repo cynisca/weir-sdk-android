@@ -8,19 +8,15 @@ import org.junit.Test
 
 /**
  * Unit tests for the in-process presentation handoff + exactly-once completion
- * delivery ([WeirPresentationRegistry] / [WeirActivityPresentationRequest]) —
- * the plumbing behind `Weir.presentActivity` that guarantees the caller's
- * `completion` fires once and only once no matter which path (bridge
- * complete/dismiss, crash-containment failure, or the Activity finishing)
- * produces the terminal result. Tested directly, since the full Activity path
- * needs an instrumented run (see maestro/).
+ * delivery ([WeirPresentationRegistry] / [WeirPresentationRequest]) — the
+ * plumbing behind [Weir.present] that guarantees the caller's completion fires
+ * once and only once no matter which terminal path wins.
  */
 class WeirPresentationRegistryTest {
 
-    private fun request(onResult: (WeirFlowResult) -> Unit) = WeirActivityPresentationRequest(
-        backgroundColor = null,
+    private fun request(onResult: (WeirFlowResult) -> Unit) = WeirPresentationRequest(
         systemBarStyle = WeirSystemBarStyle.Default,
-        build = { _, _, _ -> error("build must not be invoked in this unit test") },
+        content = { _, _ -> error("content must not be invoked in this unit test") },
         completion = onResult,
     )
 

@@ -15,5 +15,7 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "weir-android"
+include(":weir-core")
+include(":weir-observe")
 include(":weir")
 include(":demo")

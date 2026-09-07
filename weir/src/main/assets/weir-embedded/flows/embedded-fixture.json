@@ -1,0 +1,14 @@
+{
+  "specVersion": 4,
+  "id": "embedded-fixture",
+  "name": "Embedded Fixture",
+  "screens": [
+    {
+      "id": "w",
+      "type": "welcome",
+      "title": "Embedded baseline",
+      "subtitle": "Rendered from the SDK-embedded fallback, not a remote or host-supplied config.",
+      "cta": { "label": "Continue" }
+    }
+  ]
+}

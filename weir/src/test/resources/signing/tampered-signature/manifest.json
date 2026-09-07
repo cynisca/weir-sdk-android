@@ -1,18 +1,19 @@
 {
-  "specVersion": 3,
-  "bundleId": "2026-07-17-r1fixture",
+  "specVersion": 4,
+  "configId": "2026-07-17-r1fixture",
   "version": 2,
+  "registryManifestVersion": 1,
   "files": [
+    {
+      "path": "config.json",
+      "url": "https://cdn.example.com/bundles/2026-07-17-r1fixture/config.json",
+      "sha256": "30511cf79407a1657e718c7cb60c36587bf6abbc3dcef1d149510d0675b46577"
+    },
     {
       "path": "flows/cob_intake.json",
       "url": "https://cdn.example.com/bundles/2026-07-17-r1fixture/flows/cob_intake.json",
-      "sha256": "6a8228f3ce9bd712f12bbe49815031974977ffa2d44cbc0f73b0caeb79bfb543"
-    },
-    {
-      "path": "index.html",
-      "url": "https://cdn.example.com/bundles/2026-07-17-r1fixture/index.html",
-      "sha256": "d3afc599c03838097b657741fe339a3a1ad9322b27a98c59ec7df989e7c2127c"
+      "sha256": "5f42503ab812b77b80150bf99d2c9a5263367d4766d89475d4e80647094bb3de"
     }
   ],
-  "signature": "LgUidmY24s302LG4yal8r5aGIFPONRz3/bOKnlRsxSuV07y4CcgtjNXLMpoVAWmVY2W6ljmnmKF/5J7Yo5xkCQ=="
+  "signature": "dXEHPLXiAufX5grE6SSHKntbGqIugcYcwN3hde17vrEliJf8vzKv3zrCoVmZAsLlc8hKdXgqUxkxL/V5lk9PCA=="
 }

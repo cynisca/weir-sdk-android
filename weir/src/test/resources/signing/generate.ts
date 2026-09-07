@@ -1,12 +1,18 @@
-// R1 cross-language signing fixture generator (docs/android-support-plan.md §9 R1, §6 D3).
+// R1 cross-language signing fixture generator — v4 (RFC-010 §5/§8.1,
+// docs/android-support-plan.md §9 R1, §6 D3).
 //
-// Produces a COMMITTED, shared, bytes-on-disk fixture that both the iOS
-// `BundleManager` tests and the forthcoming Kotlin `BundleManager` test verify
-// against the SAME artifact — proving the Kotlin verify path accepts exactly
-// what the TypeScript `services/api` signer produces.
+// Produces a COMMITTED, shared, bytes-on-disk fixture that the Kotlin
+// `BundleManager` end-to-end tests (`BundleManagerTest.kt`) verify against —
+// proving the Kotlin verify + stage/promote path accepts exactly what the
+// TypeScript `services/api` v4 config signer produces, byte-for-byte,
+// end-to-end (not just the pure signature check — see
+// `ConfigSigningParityTest.kt` for that, which instead consumes the
+// committed `packages/evals/fixtures/v4/signing.json`, shared verbatim with
+// iOS's `ConfigSigningParityTests.swift`).
 //
-// This uses the REAL signer (`services/api/src/signing.ts`) so the signature and
-// per-file SHA-256 hashes are genuine, not hand-rolled.
+// This uses the REAL v4 signer (`services/api/src/signing.ts`'s
+// `signConfigManifest`, which wraps `@x/spec`'s `configSigningPayload`) so
+// the signature and per-file SHA-256 hashes are genuine, not hand-rolled.
 //
 // Run (from anywhere; tsx resolves the relative import):
 //   pnpm --filter @x/api exec tsx sdk-android/weir/src/test/resources/signing/generate.ts
@@ -22,16 +28,16 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Real signer — the exact code services/api runs. Imported by relative path so
-// this script is self-contained and needs no workspace package resolution.
+// Real v4 signer — the exact code services/api runs for /publish. Imported by
+// relative path so this script is self-contained and needs no workspace
+// package resolution beyond `@x/spec` (already a services/api dependency).
 import {
-  signManifest,
+  signConfigManifest,
   sha256Hex,
-  signingPayload,
   rawPublicKeyBytes,
   ED25519_SPKI_PREFIX,
-  type ManifestFile,
 } from "../../../../../../services/api/src/signing.ts";
+import { configSigningPayload, type ConfigManifestFile } from "../../../../../../packages/spec/src/config-signing.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -48,15 +54,15 @@ const publicKeyRawBase64 = rawPublicKeyBytes(publicKey).toString("base64");
 // --- The bundle contents (tiny, ASCII-only, deterministic) -------------------
 // ASCII only on purpose: JS `Array.sort()`, Swift `String.sorted()`, and Kotlin
 // `String.compareTo` all agree on ASCII ordering; non-ASCII could diverge.
-const BUNDLE_ID = "2026-07-17-r1fixture";
-const SPEC_VERSION = 3; // matches services/api's stamped SPEC_VERSION (BundleManager supports {0,3})
+const CONFIG_ID = "2026-07-17-r1fixture";
+const SPEC_VERSION = 4; // v4 only (BundleManager.supportedSpecVersions = {4})
 const VERSION = 2; // monotonic publish counter, signed (R2-S1); >1 so a downgrade test has room below it
+const REGISTRY_MANIFEST_VERSION = 1; // RFC-010 §4.3 — the component-manifest version this config was gated against
 const CDN = "https://cdn.example.com/bundles/2026-07-17-r1fixture";
 
 const files: Record<string, string> = {
-  "index.html":
-    "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>R1 fixture</title></head>\n" +
-    "<body><div id=\"weir-root\">R1 cross-language signing fixture</div></body></html>\n",
+  "config.json":
+    JSON.stringify({ id: "cob_intake", specVersion: SPEC_VERSION, entry: "welcome" }, null, 2) + "\n",
   "flows/cob_intake.json":
     JSON.stringify({ flowId: "cob_intake", specVersion: SPEC_VERSION, entry: "welcome" }, null, 2) + "\n",
 };
@@ -64,7 +70,7 @@ const files: Record<string, string> = {
 // Deterministic manifest-file entries. `url` is part of the SIGNED payload, so
 // it is fixed here and both verifiers reconstruct the payload from these exact
 // strings (offline — they never fetch the URL).
-const manifestFiles: ManifestFile[] = Object.keys(files)
+const manifestFiles: ConfigManifestFile[] = Object.keys(files)
   .sort()
   .map((path) => ({
     path,
@@ -72,20 +78,22 @@ const manifestFiles: ManifestFile[] = Object.keys(files)
     sha256: sha256Hex(Buffer.from(files[path], "utf8")),
   }));
 
-const signature = signManifest(privateKey, BUNDLE_ID, SPEC_VERSION, VERSION, manifestFiles);
+const signature = signConfigManifest(privateKey, CONFIG_ID, SPEC_VERSION, VERSION, REGISTRY_MANIFEST_VERSION, manifestFiles);
 
 interface BundleUpdateManifest {
   specVersion: number;
-  bundleId: string;
+  configId: string;
   version: number;
-  files: ManifestFile[];
+  registryManifestVersion: number;
+  files: ConfigManifestFile[];
   signature: string;
 }
 
 const goodManifest: BundleUpdateManifest = {
   specVersion: SPEC_VERSION,
-  bundleId: BUNDLE_ID,
+  configId: CONFIG_ID,
   version: VERSION,
+  registryManifestVersion: REGISTRY_MANIFEST_VERSION,
   files: manifestFiles,
   signature,
 };
@@ -102,8 +110,8 @@ function emitBundleFiles(dir: string, contents: Record<string, string>): void {
 function writeManifest(dir: string, manifest: BundleUpdateManifest): void {
   mkdirSync(dir, { recursive: true });
   // Pretty JSON with a trailing newline. NOTE: the manifest JSON layout is NOT
-  // what is signed — only `signingPayload` is. So JSON key order / whitespace
-  // here is cosmetic and does not affect verification.
+  // what is signed — only `signingPayload` (via `configSigningPayload`) is. So
+  // JSON key order / whitespace here is cosmetic and does not affect verification.
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
 }
 
@@ -125,12 +133,12 @@ emitBundleFiles(join(here, "tampered-signature"), files);
 writeManifest(join(here, "tampered-signature"), tamperedSigManifest);
 
 // tampered-file/: manifest is byte-identical to good/ (signature still valid),
-// but index.html has one byte changed on disk, so its SHA-256 no longer matches
+// but config.json has one byte changed on disk, so its SHA-256 no longer matches
 // the manifest. Verify passes the signature check; the per-file hash check MUST
 // reject. This exercises the OTHER rejection path.
 const tamperedFiles: Record<string, string> = {
   ...files,
-  "index.html": files["index.html"].replace("R1 cross-language", "R1 TAMPERED-language"),
+  "config.json": files["config.json"].replace("cob_intake", "cob_intake_TAMPERED"),
 };
 emitBundleFiles(join(here, "tampered-file"), tamperedFiles);
 writeManifest(join(here, "tampered-file"), goodManifest); // manifest unchanged on purpose
@@ -156,8 +164,11 @@ function loadManifest(dir: string): BundleUpdateManifest {
 // Full verify == signature valid AND every on-disk file hashes to its entry.
 function fullVerify(dir: string): { specSupported: boolean; signatureValid: boolean; hashesValid: boolean } {
   const m = loadManifest(dir);
-  const specSupported = [0, 3].includes(m.specVersion);
-  const payload = signingPayload(m.bundleId, m.specVersion, m.version, m.files);
+  const specSupported = m.specVersion === 4;
+  const payload = Buffer.from(
+    configSigningPayload(m.configId, m.specVersion, m.version, m.registryManifestVersion, m.files),
+    "utf8",
+  );
   let signatureValid = false;
   try {
     signatureValid = edVerify(null, payload, verifyKey, Buffer.from(m.signature, "base64"));
@@ -176,12 +187,18 @@ const good = fullVerify("good");
 const tsig = fullVerify("tampered-signature");
 const tfile = fullVerify("tampered-file");
 
-console.log("=== R1 signing fixture generated ===");
-console.log("bundleId:              ", BUNDLE_ID);
+console.log("=== R1 signing fixture generated (v4) ===");
+console.log("configId:              ", CONFIG_ID);
 console.log("specVersion:           ", SPEC_VERSION);
+console.log("registryManifestVersion:", REGISTRY_MANIFEST_VERSION);
 console.log("publicKeyRawBase64:    ", publicKeyRawBase64);
 console.log("signature (good):      ", signature);
-console.log("signed payload bytes:  ", JSON.stringify(signingPayload(BUNDLE_ID, SPEC_VERSION, VERSION, manifestFiles).toString("utf8")));
+console.log(
+  "signed payload bytes:  ",
+  JSON.stringify(
+    configSigningPayload(CONFIG_ID, SPEC_VERSION, VERSION, REGISTRY_MANIFEST_VERSION, manifestFiles),
+  ),
+);
 console.log("");
 console.log("good/                accept? spec=%s sig=%s hashes=%s  -> %s",
   good.specSupported, good.signatureValid, good.hashesValid,

@@ -7,10 +7,15 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
+import studio.aldric.weir.bridge.EventParams
+import studio.aldric.weir.bridge.EventSink
+import studio.aldric.weir.bridge.HealthEvent
+import studio.aldric.weir.bridge.HealthSeq
 import studio.aldric.weir.bridge.WeirJson
 import java.io.File
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.UUID
 
 /**
  * One file described by a remote update manifest: a path relative to the
@@ -29,7 +34,15 @@ data class BundleManifestFile(
 )
 
 /**
- * Remote update manifest shape — faithful port of iOS `BundleUpdateManifest`.
+ * Remote update manifest shape — v4 (RFC-010 §4.1/§8.1), the exact response
+ * `GET /manifest/:flowId` serves (`services/api/src/app.ts`) and the exact
+ * input `configSigningPayload` (`packages/spec/src/config-signing.ts`) signs
+ * over. Faithful port of iOS `BundleUpdateManifest`
+ * (`sdk-ios/Sources/WeirCore/Persistence/BundleManager.swift`, commit
+ * 5eef3f0) — Phase C's real, live contract replaces this SDK's own prior
+ * placeholder v0/v3 shape (`bundleId`, no `registryManifestVersion`):
+ * greenfield, no compatibility shim for the retired shape (MISSION.md
+ * working agreement 2).
  *
  * `signature` is a raw 64-byte Ed25519 signature (standard base64) over
  * [signingPayload], produced server-side by `services/api`. Verification uses
@@ -38,7 +51,12 @@ data class BundleManifestFile(
 @Serializable
 data class BundleUpdateManifest(
     val specVersion: Int,
-    val bundleId: String,
+    /**
+     * The published bundle's own id (`"<flowId>-v<version>"` server-side) —
+     * named `configId` to match the wire field and `configSigningPayload`'s
+     * parameter name exactly, not this SDK's prior `bundleId` name.
+     */
+    val configId: String,
     /**
      * Monotonic per-(appId, flowId) publish counter, signed. The SDK rejects a
      * manifest whose version is not strictly newer than its last-promoted one,
@@ -46,17 +64,27 @@ data class BundleUpdateManifest(
      * active bundle (R2-S1).
      */
     val version: Int,
+    /**
+     * The component-manifest version the server validated this served config
+     * against (RFC-010 §4.3) — part of the signed payload so a replayed
+     * manifest can't be paired with a different registry state than the one
+     * it was actually gated against.
+     */
+    val registryManifestVersion: Int,
     val files: List<BundleManifestFile>,
     val signature: String,
 ) {
     /**
-     * Canonical bytes the signature is computed over. THE load-bearing detail
-     * (see `src/test/resources/signing/README.md`):
-     *  1. `bundleId:<bundleId>`
+     * Canonical bytes the signature is computed over — byte-for-byte the same
+     * string `configSigningPayload` (`packages/spec/src/config-signing.ts`)
+     * builds (RFC-010 §5):
+     *  1. `configId:<configId>`
      *  2. `specVersion:<int>`
      *  3. `version:<int>`
-     *  4. one `<path>:<url>:<sha256>` line per file, **the file lines sorted
-     *     lexicographically as whole strings** (headers prepended AFTER sorting)
+     *  4. `registryManifestVersion:<int>`
+     *  5. one `<path>:<url>:<sha256>` line per file, **the file lines sorted
+     *     lexicographically as whole strings** (header lines prepended AFTER
+     *     sorting, in that fixed order)
      *  - joined with a single `\n` (LF), **no trailing newline**, UTF-8.
      *
      * Kotlin `List<String>.sorted()` uses natural `String.compareTo` (UTF-16
@@ -66,7 +94,12 @@ data class BundleUpdateManifest(
     val signingPayload: ByteArray
         get() {
             val fileLines = files.map { "${it.path}:${it.url}:${it.sha256}" }.sorted()
-            val lines = listOf("bundleId:$bundleId", "specVersion:$specVersion", "version:$version") + fileLines
+            val lines = listOf(
+                "configId:$configId",
+                "specVersion:$specVersion",
+                "version:$version",
+                "registryManifestVersion:$registryManifestVersion",
+            ) + fileLines
             return lines.joinToString("\n").toByteArray(Charsets.UTF_8)
         }
 }
@@ -101,6 +134,16 @@ interface BundleHttpClient {
 }
 
 /**
+ * Thrown by a [BundleHttpClient] when the response came back but with a
+ * non-2xx status, so [BundleManager] can report the real [status] on
+ * `health_manifest_fetch_failed` instead of collapsing every failure to `0`.
+ * Every other [BundleHttpClient] failure (timeout, DNS, connection refused,
+ * body-too-large) has no HTTP status at all, so it stays a plain
+ * [java.io.IOException] and reports `httpStatus = 0`.
+ */
+class BundleHttpStatusException(val status: Int, message: String) : java.io.IOException(message)
+
+/**
  * Default [BundleHttpClient]: one `HttpURLConnection` GET per call — zero new
  * dependency, the Android analogue of iOS's `URLSession.data(from:)`.
  */
@@ -118,7 +161,7 @@ class HttpUrlConnectionBundleHttpClient(
             try {
                 val status = connection.responseCode
                 if (status !in 200..299) {
-                    throw java.io.IOException("HTTP $status fetching $url")
+                    throw BundleHttpStatusException(status, "HTTP $status fetching $url")
                 }
                 connection.inputStream.use { readCapped(it, maxBytes, url) }
             } finally {
@@ -145,7 +188,8 @@ class HttpUrlConnectionBundleHttpClient(
  * Manages which flow-bundle directory is "active" (what the WebView should
  * serve assets from), bundled-first with a background remote-update check that
  * never swaps the active bundle mid-flight. Faithful port of iOS
- * `BundleManager` (`sdk-ios/Sources/Weir/Persistence/BundleManager.swift`).
+ * `BundleManager` (`sdk-ios/Sources/WeirCore/Persistence/BundleManager.swift`,
+ * commit 5eef3f0).
  *
  * ## On-disk layout under [rootDirectory]
  * ```
@@ -173,9 +217,26 @@ class BundleManager(
     private val embeddedBundleRoot: File? = null,
     private val httpClient: BundleHttpClient = HttpUrlConnectionBundleHttpClient(),
     private val logger: (String) -> Unit = {},
+    /** Manifest/remote-bundle health telemetry (Phase 3 structured
+     *  diagnostics) — `null` (the default) means every call site below is a
+     *  no-op, so existing callers that construct a [BundleManager] with no
+     *  sink behave exactly as before. Rides under
+     *  [HealthEvent.UPDATE_SESSION_FLOW_ID] with this instance's own
+     *  [healthSessionId]/[healthSeq], never a real flow's session. */
+    private val eventSink: EventSink? = null,
 ) {
     private val rootDirectory: File =
         rootDirectory ?: defaultRootDirectory()
+
+    /** Native-generated session id for every health event this instance emits
+     *  — distinct from any JS runtime session, mirrors [HealthSeq]'s existing
+     *  per-component-instance pattern (see `EventQueue.flushHealthSessionId`). */
+    private val healthSessionId: String = UUID.randomUUID().toString()
+    private val healthSeq = HealthSeq()
+
+    private fun emitHealth(event: EventParams) {
+        eventSink?.append(event)
+    }
 
     /** Validated Ed25519 public-key params, or `null` (fail closed). */
     private val publicKey: Ed25519PublicKeyParameters? =
@@ -241,12 +302,36 @@ class BundleManager(
     /**
      * Whether [activeBundleURL] actually contains a spec for [flowId] — used at
      * the present boundary to decide whether a promoted remote bundle is safe
-     * to render from. Two on-disk shapes recognized: a flat `manifest.json`
-     * whose top-level `flowId` names the single flow, or the multi-flow
-     * `flows/<flowId>.json` convention. Port of iOS `activeBundleContainsFlow`.
+     * to render from. Three on-disk shapes recognized, v4 first (port of iOS
+     * `activeBundleContainsFlow`, `sdk-ios/Sources/WeirCore/Persistence/BundleManager.swift`):
+     *
+     * 1. `config.json`'s own top-level `"id"` — what `/publish` actually
+     *    writes today (RFC-010 §2/§3.3, greenfield-replaced the v3 shape
+     *    below, MISSION.md working agreement 2): one config per staged/
+     *    promoted directory, so its own declared flow id is authoritative.
+     * 2. What `weir_deploy` published under the retired v3 HTML-bundle path: a
+     *    flat `manifest.json` whose top-level `flowId` names the single flow
+     *    the bundle renders. Kept as a fallback (not removed outright) purely
+     *    because it costs nothing and an already-promoted v3 bundle on a real
+     *    device must not suddenly stop resolving the moment this SDK build
+     *    updates.
+     * 3. The multi-flow `flows/<flowId>.json` convention, kept for the same
+     *    reason as (2).
      */
     fun activeBundleContainsFlow(flowId: String): Boolean {
         val root = activeBundleURL
+
+        val configFile = File(root, "config.json")
+        if (configFile.isFile) {
+            try {
+                val parsed = LENIENT_JSON.parseToJsonElement(configFile.readText()) as? JsonObject
+                val configFlowId = parsed?.get("id")?.jsonPrimitive?.content
+                if (configFlowId == flowId) return true
+            } catch (_: Exception) {
+                // fall through to the manifest.json/flows/<flowId>.json shapes
+            }
+        }
+
         val manifestFile = File(root, "manifest.json")
         if (manifestFile.isFile) {
             try {
@@ -269,10 +354,29 @@ class BundleManager(
      * `checkForUpdate`.
      */
     suspend fun checkForUpdate(manifestURL: String) {
+        val safeManifestUrl = safeDiagnosticUrl(manifestURL)
+        emitHealth(
+            HealthEvent.manifestFetchStarted(
+                flowId = HealthEvent.UPDATE_SESSION_FLOW_ID,
+                sessionId = healthSessionId,
+                seq = healthSeq.next(),
+                url = safeManifestUrl,
+            ),
+        )
+
         val rawManifest: ByteArray = try {
             httpClient.get(manifestURL, MAX_MANIFEST_BYTES)
         } catch (e: Exception) {
             logger("BundleManager: manifest fetch failed: $e")
+            emitHealth(
+                HealthEvent.manifestFetchFailed(
+                    flowId = HealthEvent.UPDATE_SESSION_FLOW_ID,
+                    sessionId = healthSessionId,
+                    seq = healthSeq.next(),
+                    httpStatus = (e as? BundleHttpStatusException)?.status ?: 0,
+                    reason = safeFetchFailureReason(e),
+                ),
+            )
             return
         }
 
@@ -280,6 +384,7 @@ class BundleManager(
             WeirJson.decodeFromString(BundleUpdateManifest.serializer(), rawManifest.toString(Charsets.UTF_8))
         } catch (e: Exception) {
             logger("BundleManager: manifest decode failed: $e")
+            rejectManifest(HealthEvent.ManifestRejectionReason.SCHEMA_INVALID)
             return
         }
 
@@ -288,27 +393,32 @@ class BundleManager(
         // be a resource-exhaustion vector on its own.
         if (manifest.files.size > MAX_MANIFEST_FILES) {
             logger("BundleManager: manifest lists ${manifest.files.size} files (> $MAX_MANIFEST_FILES); ignoring")
+            rejectManifest(HealthEvent.ManifestRejectionReason.SCHEMA_INVALID)
             return
         }
 
         when (verify(manifest, publicKey)) {
             ManifestVerification.UNSUPPORTED_SPEC_VERSION -> {
                 logger("BundleManager: manifest specVersion ${manifest.specVersion} not in $supportedSpecVersions; ignoring")
+                rejectManifest(HealthEvent.ManifestRejectionReason.SCHEMA_INVALID)
                 return
             }
             ManifestVerification.INVALID_SIGNATURE -> {
-                logger("BundleManager: manifest signature invalid for bundleId ${manifest.bundleId}; ignoring")
+                logger("BundleManager: manifest signature invalid for configId ${manifest.configId}; ignoring")
+                rejectManifest(HealthEvent.ManifestRejectionReason.SIGNATURE_INVALID)
                 return
             }
             ManifestVerification.MALFORMED_SIGNATURE_ENCODING -> {
                 logger("BundleManager: manifest signature not valid base64; ignoring")
+                rejectManifest(HealthEvent.ManifestRejectionReason.SIGNATURE_INVALID)
                 return
             }
             ManifestVerification.VALID -> Unit
         }
 
-        if (!isSafePathSegment(manifest.bundleId)) {
-            logger("BundleManager: manifest bundleId '${manifest.bundleId}' is not a safe path segment; ignoring")
+        if (!isSafePathSegment(manifest.configId)) {
+            logger("BundleManager: manifest configId '${manifest.configId}' is not a safe path segment; ignoring")
+            rejectManifest(HealthEvent.ManifestRejectionReason.SCHEMA_INVALID)
             return
         }
 
@@ -321,11 +431,12 @@ class BundleManager(
         val currentVersion = synchronized(lock) { maxOf(activeVersion, stagedVersion ?: 0) }
         if (manifest.version <= currentVersion) {
             logger("BundleManager: manifest version ${manifest.version} not newer than current $currentVersion; ignoring (anti-downgrade)")
+            rejectManifest(HealthEvent.ManifestRejectionReason.ANTI_DOWNGRADE)
             return
         }
 
         val stagedRoot = File(rootDirectory, "staged")
-        val stagedDir = File(stagedRoot, manifest.bundleId)
+        val stagedDir = File(stagedRoot, manifest.configId)
         try {
             stagedDir.mkdirs()
             var totalBytes = 0L
@@ -340,7 +451,7 @@ class BundleManager(
                     throw IllegalStateException("bundle exceeds $MAX_TOTAL_BYTES total bytes")
                 }
                 if (sha256Hex(bytes) != file.sha256) {
-                    throw IllegalStateException("SHA-256 mismatch for ${file.path}")
+                    throw HashMismatchException(file.path)
                 }
                 val destination = resolveSafeChild(stagedDir, file.path)
                     ?: throw IllegalStateException("unsafe manifest file path: ${file.path}")
@@ -354,11 +465,16 @@ class BundleManager(
             File(stagedDir, STAGED_MANIFEST_FILENAME).writeBytes(rawManifest)
 
             // R2-S5: keep only this newest stage — prune any sibling staged dirs
-            // (older bundleIds that staged earlier this session) so staged/ can't
+            // (older configIds that staged earlier this session) so staged/ can't
             // accumulate one directory per superseded version between relaunches.
             stagedRoot.listFiles()?.forEach { sibling ->
-                if (sibling.name != manifest.bundleId) sibling.deleteRecursively()
+                if (sibling.name != manifest.configId) sibling.deleteRecursively()
             }
+        } catch (e: HashMismatchException) {
+            logger("BundleManager: staging download failed: $e; discarding partial stage")
+            stagedDir.deleteRecursively()
+            rejectManifest(HealthEvent.ManifestRejectionReason.HASH_MISMATCH)
+            return
         } catch (e: Exception) {
             logger("BundleManager: staging download failed: $e; discarding partial stage")
             stagedDir.deleteRecursively()
@@ -366,10 +482,69 @@ class BundleManager(
         }
 
         synchronized(lock) {
-            stagedBundleId = manifest.bundleId
+            stagedBundleId = manifest.configId
             stagedBundleURL = stagedDir
             stagedVersion = manifest.version
         }
+        emitHealth(
+            HealthEvent.remoteStaged(
+                flowId = HealthEvent.UPDATE_SESSION_FLOW_ID,
+                sessionId = healthSessionId,
+                seq = healthSeq.next(),
+                version = manifest.version,
+                // HealthEvent's param/JSON-key name stays `bundleId` — this is
+                // device-local telemetry, not the signed wire contract, so it
+                // isn't part of the RFC-010 §5 rename (matches iOS's
+                // `HealthEvent.remoteStaged(... bundleId: manifest.configId)`).
+                bundleId = manifest.configId,
+            ),
+        )
+    }
+
+    /** Thrown internally when a staged file's SHA-256 doesn't match the signed
+     *  manifest, so [checkForUpdate] can report
+     *  [HealthEvent.ManifestRejectionReason.HASH_MISMATCH] specifically instead
+     *  of the generic "staging download failed" path. Never carries file bytes
+     *  or the digest itself — just the (non-secret) manifest-relative path. */
+    private class HashMismatchException(path: String) : Exception("SHA-256 mismatch for $path")
+
+    private fun rejectManifest(reason: HealthEvent.ManifestRejectionReason) {
+        emitHealth(
+            HealthEvent.manifestRejected(
+                flowId = HealthEvent.UPDATE_SESSION_FLOW_ID,
+                sessionId = healthSessionId,
+                seq = healthSeq.next(),
+                reason = reason,
+            ),
+        )
+    }
+
+    /**
+     * Reduces [url] to origin + path for `health_manifest_fetch_started` —
+     * never the query string (which could carry a signed-URL token) or
+     * userinfo credentials. Returns `""` (never the raw, possibly-credentialed
+     * string) if [url] doesn't even parse as a URI.
+     */
+    private fun safeDiagnosticUrl(url: String): String = try {
+        val uri = java.net.URI(url)
+        buildString {
+            uri.scheme?.let { append(it); append("://") }
+            uri.host?.let { append(it) }
+            if (uri.port != -1) { append(':'); append(uri.port) }
+            append(uri.path ?: "")
+        }
+    } catch (_: Exception) {
+        ""
+    }
+
+    /** Short, safe `health_manifest_fetch_failed` reason code — never the raw
+     *  exception message, which (e.g. [HttpUrlConnectionBundleHttpClient]'s own
+     *  messages) can embed the full request URL. */
+    private fun safeFetchFailureReason(e: Exception): String = when (e) {
+        is java.net.SocketTimeoutException -> "timeout"
+        is BundleHttpStatusException -> "http_error"
+        is java.io.IOException -> "network_error"
+        else -> "unknown_error"
     }
 
     /**
@@ -417,6 +592,16 @@ class BundleManager(
             stagedBundleId = null
             stagedBundleURL = null
             stagedVersion = null
+
+            emitHealth(
+                HealthEvent.remotePromoted(
+                    flowId = HealthEvent.UPDATE_SESSION_FLOW_ID,
+                    sessionId = healthSessionId,
+                    seq = healthSeq.next(),
+                    version = promotedVersion,
+                    bundleId = stagedId,
+                ),
+            )
         }
     }
 
@@ -465,7 +650,7 @@ class BundleManager(
             when (verdict) {
                 RehydrationVerdict.VALID -> {
                     if (winner == null) {
-                        winner = Triple(manifest!!.bundleId, candidate, manifest.version)
+                        winner = Triple(manifest!!.configId, candidate, manifest.version)
                     } else {
                         logger("BundleManager: discarding stale staged bundle at ${candidate.name} in favor of a newer one")
                         candidate.deleteRecursively()
@@ -486,7 +671,7 @@ class BundleManager(
 
     /**
      * Re-verifies a staged directory from current bytes: signature (against the
-     * trust anchor), `bundleId == directory name` (anti-replay), and every
+     * trust anchor), `configId == directory name` (anti-replay), and every
      * per-file SHA-256. Distinguishes "genuinely bad" from "this instance has
      * no key to judge with" (the latter must never destroy another instance's
      * legitimate stage). Port of iOS `verifyStagedManifestOnDisk`.
@@ -508,7 +693,7 @@ class BundleManager(
         if (verify(manifest, publicKey) != ManifestVerification.VALID) {
             return RehydrationVerdict.CORRUPT_OR_TAMPERED to null
         }
-        if (manifest.bundleId != directory.name) {
+        if (manifest.configId != directory.name) {
             return RehydrationVerdict.CORRUPT_OR_TAMPERED to null
         }
         for (file in manifest.files) {
@@ -558,12 +743,13 @@ class BundleManager(
     companion object {
         /**
          * Spec versions this SDK understands, gating remote manifests. Mirrors
-         * iOS `supportedSpecVersions = {0, 3}`: `3` is what `services/api`
-         * stamps on every published manifest (the R1 fixture uses `3`); `0`
-         * stays for existing hand-built fixtures. `BundleManager` never parses
-         * spec *content*, it only gates on this set.
+         * iOS `supportedSpecVersions = [4]` (`sdk-ios` `BundleManager.swift`,
+         * commit 5eef3f0): v4 only, greenfield — the placeholder v0/v3 shape
+         * (`bundleId`, no `registryManifestVersion`) is retired with no
+         * compatibility shim (MISSION.md working agreement 2). `BundleManager`
+         * never parses spec *content*, it only gates on this set.
          */
-        val supportedSpecVersions: Set<Int> = setOf(0, 3)
+        val supportedSpecVersions: Set<Int> = setOf(4)
 
         /** Sidecar the verified manifest is written into inside a staged dir —
          *  the only way a future process instance can re-verify (not trust) it. */

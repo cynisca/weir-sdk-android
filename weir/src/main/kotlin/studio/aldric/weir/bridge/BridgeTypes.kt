@@ -2,7 +2,6 @@ package studio.aldric.weir.bridge
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 
@@ -42,18 +41,6 @@ object BridgeTransport {
      * additive, so this stays 1 (same as iOS).
      */
     const val PROTOCOL_VERSION = 1
-}
-
-/**
- * Central JSON codec for the bridge. `ignoreUnknownKeys` keeps decoding of
- * untrusted JS-supplied payloads defensive (a stray field never fails a
- * decode); `explicitNulls = false` omits null optionals on encode so the wire
- * shape matches the TS `.strict()` envelopes (`{id, ok, result}` /
- * `{id, ok, error}`).
- */
-val WeirJson: Json = Json {
-    ignoreUnknownKeys = true
-    explicitNulls = false
 }
 
 // ---------------------------------------------------------------------------
@@ -200,25 +187,6 @@ data class HapticParams(
     /** v1 — 0..1, only meaningful for impact styles. Optional so a v0-shaped
      *  payload (field absent) still decodes. */
     val intensity: Double? = null,
-)
-
-// ---------------------------------------------------------------------------
-// event
-// ---------------------------------------------------------------------------
-
-@Serializable
-data class EventParams(
-    val flowId: String,
-    val screenId: String? = null,
-    val variantId: String? = null,
-    val sessionId: String,
-    /** v1 — the lazy userId join fix (spec_2 §2/§9). Optional: a v0 payload
-     *  (field absent) and a v1 payload from a flow with no host-injected
-     *  userId both decode. */
-    val userId: String? = null,
-    val ts: Double,
-    val seq: Int,
-    val payload: JsonElement,
 )
 
 // ---------------------------------------------------------------------------

@@ -2,15 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      WeirFlowActivity — the SDK's presentation host (plan §8 Phase 3). Declared
+      WeirFlowActivity — the SDK's native Compose presentation host. Declared
       here so it merges into any consuming app's manifest automatically; the app
       does not re-declare it.
 
-      - not exported: only the SDK (Weir.presentActivity) ever launches it.
-      - configChanges: the flow lives in a WebView that keeps its own state; we
-        don't want an orientation/size change to recreate the Activity and drop
-        the in-process presentation registry entry (which would strand the
-        caller's completion). The WebView re-lays-out itself.
+      - not exported: only Weir.present launches it.
+      - configChanges: recreation would drop the in-process presentation
+        registry entry and strand the caller's completion.
       - a platform NoActionBar theme (no AppCompat dependency); the real
         background is set programmatically per-flow in onCreate (no white flash).
     -->

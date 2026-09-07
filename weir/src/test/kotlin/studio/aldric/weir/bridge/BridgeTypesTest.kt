@@ -103,24 +103,6 @@ class BridgeTypesTest {
     // ---- v1 fixture parity (matches BridgeTypesTests.swift) ----
 
     @Test
-    fun v0EventWithoutUserIdStillDecodes() {
-        val params = decodeParams(
-            """{"id":"1","method":"event","params":{"flowId":"f","sessionId":"s","ts":1000,"seq":0,"payload":{}}}""",
-            EventParams.serializer(),
-        )
-        assertNull(params.userId)
-    }
-
-    @Test
-    fun v1EventWithUserIdDecodes() {
-        val params = decodeParams(
-            """{"id":"1","method":"event","params":{"flowId":"f","sessionId":"s","userId":"user-42","ts":1000,"seq":0,"payload":{}}}""",
-            EventParams.serializer(),
-        )
-        assertEquals("user-42", params.userId)
-    }
-
-    @Test
     fun v0HapticWithoutIntensityStillDecodes() {
         val params = decodeParams(
             """{"id":"1","method":"haptic","params":{"style":"light"}}""",

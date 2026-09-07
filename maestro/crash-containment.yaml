@@ -1,24 +1,24 @@
-# Layer 3 (Android) — crash containment.
+# Layer 3 (Android, Compose) — crash containment.
 #
-# Forces a real WebView main-frame load failure (not a fabricated one): the
-# "Start broken flow" button presents with a bundleRoot that doesn't exist, so
-# WeirAssetLoader serves nothing for the entry point and the WebView's
-# main-frame load fails. WeirWebView's WebViewClient.onReceivedError (main frame)
-# routes that to onFailure → WeirFlowResult.Failed, exactly as a real
-# content-load failure or onRenderProcessGone crash would.
-#
-# Asserts: the failure banner appears (native onFailure fired) and the host
-# process is still alive and interactive (WeirFlowActivity finished and returned
-# control) — the app degraded to a completion callback instead of crashing.
+# The debug gallery exposes one deliberately missing flow ID. It invokes the
+# same public `Weir.present` entry point as every real specimen, so this proves
+# a config-resolution failure returns to the host callback rather than
+# crashing or stranding the app. The probe is absent from release builds.
 appId: studio.aldric.weir.demo
 ---
 - launchApp:
     clearState: true
-- tapOn: "Start broken flow"
+- scrollUntilVisible:
+    element:
+      text: "Debug failure probe"
+    direction: DOWN
+- tapOn: "Debug failure probe"
+- scrollUntilVisible:
+    element:
+      text: "Flow specimen cabinet"
+    direction: UP
 - extendedWaitUntil:
-    visible: ".*onFailure.*"
+    visible: ".*Failed.*"
     timeout: 8000
-- assertVisible: ".*onFailure.*"
-# Host is alive and back in control — the home button is interactable again.
-- assertVisible: "Start onboarding"
-- takeScreenshot: crash-containment-result
+- assertNotVisible: ".*Presenting debug-missing-flow.*"
+- takeScreenshot: crash-containment-host-failure

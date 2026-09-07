@@ -1,13 +1,13 @@
 package studio.aldric.weir.bridge
 
 /**
- * The seam behind the bridge's `permission.request`. On iOS the router calls
- * the real `UNUserNotificationCenter`/ATT/AVCapture/CLLocation APIs directly
- * with `async`; on Android a runtime permission needs an `Activity` in the
- * resumed state and an `ActivityResultLauncher`, which the Phase 3
- * `WeirFlowActivity` host will own. Injecting this interface keeps
- * [BridgeRouter] testable and lets Phase 3 slot in the real Activity-backed
- * implementation without touching the router.
+ * The seam behind a `permissionPrime` screen's permission request. On iOS the
+ * equivalent calls the real `UNUserNotificationCenter`/ATT/AVCapture/
+ * CLLocation APIs directly with `async`; on Android a runtime permission
+ * needs an `Activity` in the resumed state and an `ActivityResultLauncher`,
+ * which `WeirFlowActivity` owns. Injecting this interface keeps callers
+ * testable and lets a real Activity-backed implementation slot in without
+ * coupling to the Activity itself.
  */
 interface PermissionRequester {
     suspend fun requestPermission(type: PermissionType): PermissionStatus

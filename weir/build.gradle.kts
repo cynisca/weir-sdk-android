@@ -2,18 +2,22 @@ plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("maven-publish")
 }
-
-// group/version double as the coordinate a Gradle composite build (git
-// source dependency) resolves this module as — "studio.aldric:weir" — not
-// just the Maven-publish coordinate below. Keep the two in sync.
-group = "studio.aldric"
-version = "0.1.1"
 
 android {
     namespace = "studio.aldric.weir"
     compileSdk = 35
+
+    buildFeatures {
+        compose = true
+        // RC-P0 (release-gate re-review): generates studio.aldric.weir.BuildConfig
+        // with a real BuildConfig.DEBUG constant, so ComponentRegistry's registry-
+        // drift assertion can be gated by build type rather than a manually-set
+        // flag that defaulted to "always crash" in every build, release included.
+        buildConfig = true
+    }
 
     defaultConfig {
         minSdk = 26
@@ -47,7 +51,7 @@ android {
     testOptions {
         unitTests {
             // Robolectric needs the merged Android resources/manifest to stand
-            // up a real-ish framework (SharedPreferences, WebView shadows).
+            // up a real-ish framework (SharedPreferences and Activity hosts).
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
         }
@@ -63,11 +67,14 @@ android {
     }
 }
 
-// Maven coordinate: studio.aldric:weir:0.1.0 — consumed from `mavenLocal()`.
+// Maven coordinate: <project.group>:weir:<project.version> — studio.aldric:weir:1.1.0
+// from `mavenLocal()`, com.github.cynisca.weir-sdk-android:weir:<tag> from JitPack.
 publishing {
     publications {
         create<MavenPublication>("release") {
-            groupId = "studio.aldric"
+            // groupId/version track project.group/project.version (root build.gradle.kts)
+            // so the JitPack mirror can republish these sources under its own coordinates.
+            groupId = project.group.toString()
             artifactId = "weir"
             version = project.version.toString()
 
@@ -84,6 +91,10 @@ publishing {
 }
 
 dependencies {
+    // Compose-free queue/envelope/identity primitives are published separately
+    // and remain part of this renderer's transitive public API.
+    api(project(":weir-core"))
+
     // Bridge JSON (mirrors sdk-ios's Codable/JSONValue handling). `api` because
     // public bridge types (WeirVariable.value, the envelope params/result) are
     // JsonElement-typed — a consumer reading a completed flow's variables needs
@@ -97,27 +108,20 @@ dependencies {
     // 26. No Security.addProvider registration anywhere.
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
-    // Async dispatch seam — the iOS BridgeRouter's `Task { }` / `async`
-    // suspend calls (permission/purchase/products) map to coroutines here.
+    // Native engine, permission, and purchase async work.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 
-    // App-foreground flush trigger for the offline EventQueue — the Android
-    // analogue of iOS's `UIApplication.willEnterForegroundNotification`. Only
-    // ProcessLifecycleForegroundTrigger touches this; EventQueue itself stays
-    // lifecycle-agnostic (injectable ForegroundFlushTrigger) so unit tests
-    // don't depend on a real Android lifecycle.
-    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
-
-    // Modern WebView surface (WebViewAssetLoader, addJavascriptInterface host,
-    // WebViewCompat.addDocumentStartJavaScript for the __weirUserId injection).
-    // Exposed as `api` because the public WebView host types reference webkit
-    // types on their signatures.
-    api("androidx.webkit:webkit:1.12.1")
-
-    // Phase 3 presentation host: WeirFlowActivity is a ComponentActivity and
+    // Presentation host: WeirFlowActivity is a ComponentActivity and
     // owns the runtime-permission ActivityResultLauncher. `api` because
     // WeirFlowActivity (public) extends ComponentActivity.
     api("androidx.activity:activity-ktx:1.9.3")
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-text")
+    implementation("androidx.compose.runtime:runtime")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.compose.material:material-icons-core")
 
     // ContextCompat.checkSelfPermission (permission short-circuit) + WindowCompat
     // / WindowInsetsControllerCompat (edge-to-edge + system-bar style).
@@ -126,9 +130,12 @@ dependencies {
     // Unit tests.
     testImplementation("junit:junit:4.13.2")
 
-    // Android-framework-backed unit tests (SharedPreferences, WebView, Context).
+    // Android-framework-backed unit tests (SharedPreferences, Activity, Context).
     // 4.14.1 supports compileSdk 35 on AGP 8.7.x.
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.compose.ui:ui-test-manifest")
 }

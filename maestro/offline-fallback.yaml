@@ -1,39 +1,37 @@
-# Layer 3 (Android) — offline / bundled-fallback render.
+# Layer 3 (Android, Compose) — network-independent render.
 #
-# What this proves: the embedded flow bundle (copied out of assets/ to internal
-# storage by MainActivity) renders and the flow completes end-to-end using only
-# local content served over the WebViewAssetLoader secure origin — no network
-# dependency in the render/bridge path.
+# Retargeted 2026-07-31 for the Compose `:demo` gallery (see
+# permission-prime-grant.yaml's header for what changed). Reframed, not just
+# reworded: the pre-Compose demo drew a real distinction between "embedded
+# fallback bundle" and "promoted remote bundle" (BundleManager's resolve
+# order). This gallery has no remote-config wiring at all in its default
+# launch path — `MainActivity.installGallery()` copies every fixture straight
+# out of the APK's own assets, and `Weir.present(configRoot = galleryRoot,
+# ...)` always renders from that local copy. There is no "fallback FROM a
+# remote bundle" scenario to exercise here (same narrowing the pre-Compose
+# version already documented for `Weir.presentActivity`).
 #
-# What it does NOT prove (documented, not papered over):
-# - BundleManager's promoted-remote-vs-embedded fallback: the demo points
-#   Weir.presentActivity straight at the materialized embedded bundle, there is
-#   no remote bundle to fall back FROM here (same narrowing as sdk-ios).
-# - A true airplane-mode toggle. On an emulator this can be added with
-#   `- setAirplaneMode: enabled` before launch (Maestro 1.39+); the flow below
-#   is network-agnostic because the bundle references no fetch/XHR/WS.
+# What this proves instead, honestly: a real specimen renders and completes
+# with airplane mode on — every fixture in this gallery is genuinely
+# network-independent by construction, not just by omission of a network
+# call somewhere unexercised.
 appId: studio.aldric.weir.demo
 ---
 - launchApp:
     clearState: true
-- tapOn: "Start onboarding"
+- setAirplaneMode: enabled
+- scrollUntilVisible:
+    element:
+      text: "Welcome"
+    direction: DOWN
+- tapOn: "Welcome"
 - extendedWaitUntil:
-    visible: "Begin"
+    visible: "Build the path as you walk it"
     timeout: 8000
-- tapOn: "Begin"
+- tapOn: "Finish specimen"
 - extendedWaitUntil:
-    visible: "Not now"
+    visible: ".*Completed welcome.*"
     timeout: 5000
-# Skip the permission prime (the in-app skip does NOT call the bridge) so this
-# flow stays purely about local render + completion.
-- tapOn: "Not now"
-- extendedWaitUntil:
-    visible: "Finish"
-    timeout: 5000
-- tapOn: "Finish"
-- extendedWaitUntil:
-    visible: ".*onComplete.*"
-    timeout: 5000
-- assertVisible: ".*notifyOptIn=false.*"
-- assertNotVisible: ".*onFailure.*"
+- assertNotVisible: ".*Failed.*"
 - takeScreenshot: offline-fallback-complete
+- setAirplaneMode: disabled

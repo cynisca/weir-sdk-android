@@ -17,11 +17,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Ports the intent of `sdk-ios/Tests/WeirTests/BundleManagerTests.swift` plus
- * THE R1 cross-language parity gate (docs/android-support-plan.md §9 R1):
- * loads the committed `src/test/resources/signing/` fixture — produced by the
- * real `services/api` TS signer — and proves the Kotlin/BouncyCastle verify
- * path accepts EXACTLY what that signer produces, byte-for-byte.
+ * Ports the intent of `sdk-ios/Tests/WeirCoreTests/BundleManagerTests.swift`
+ * plus THE R1 cross-language parity gate (docs/android-support-plan.md §9
+ * R1): loads the committed `src/test/resources/signing/` fixture — produced
+ * by the real `services/api` v4 TS signer (`signConfigManifest`) — and
+ * proves the Kotlin/BouncyCastle verify path accepts EXACTLY what that
+ * signer produces, byte-for-byte. v4 (RFC-010 §5): `configId` +
+ * `registryManifestVersion`, `specVersion: 4`, `config.json` in place of the
+ * retired `index.html` bundle file (see `src/test/resources/signing/README.md`).
  *
  * Pure-JVM (no Robolectric): [BundleManager] takes an injectable root dir and
  * an injectable [BundleHttpClient], so these run against real temp dirs.
@@ -76,8 +79,8 @@ class BundleManagerTest {
 
     private fun tempRoot(): File = Files.createTempDirectory("BundleManagerTest-").toFile()
 
-    private fun stagedDir(root: File, bundleId: String): File =
-        File(File(root, "staged"), bundleId)
+    private fun stagedDir(root: File, configId: String): File =
+        File(File(root, "staged"), configId)
 
     /** Loads the committed throwaway PKCS8 test-signing key for in-test signing. */
     private fun fixturePrivateKey(): Ed25519PrivateKeyParameters {
@@ -116,9 +119,9 @@ class BundleManagerTest {
             httpClient = FixtureHttpClient(fixtureDir("good"), "manifest://good"),
         )
         runBlocking { manager.checkForUpdate("manifest://good") }
-        val staged = stagedDir(root, manifest.bundleId)
+        val staged = stagedDir(root, manifest.configId)
         assertTrue("good/ must ACCEPT: staged dir present", staged.isDirectory)
-        assertTrue(File(staged, "index.html").isFile)
+        assertTrue(File(staged, "config.json").isFile)
         assertTrue(File(staged, "flows/cob_intake.json").isFile)
         assertTrue(File(staged, BundleManager.STAGED_MANIFEST_FILENAME).isFile)
     }
@@ -138,7 +141,7 @@ class BundleManagerTest {
         runBlocking { manager.checkForUpdate("manifest://tsig") }
         assertFalse(
             "tampered-signature/ must REJECT: nothing staged",
-            stagedDir(root, manifest.bundleId).exists(),
+            stagedDir(root, manifest.configId).exists(),
         )
     }
 
@@ -147,9 +150,9 @@ class BundleManagerTest {
         val manifest = loadManifest("tampered-file")
         // Signature is still VALID (manifest byte-identical to good/)...
         assertEquals(ManifestVerification.VALID, BundleManager.verify(manifest, fixturePublicKey()))
-        // ...but index.html was altered on disk, so its SHA-256 no longer matches.
-        val declared = manifest.files.first { it.path == "index.html" }.sha256
-        val onDisk = BundleManager.sha256Hex(File(fixtureDir("tampered-file"), "index.html").readBytes())
+        // ...but config.json was altered on disk, so its SHA-256 no longer matches.
+        val declared = manifest.files.first { it.path == "config.json" }.sha256
+        val onDisk = BundleManager.sha256Hex(File(fixtureDir("tampered-file"), "config.json").readBytes())
         assertNotEquals(declared, onDisk)
 
         val root = tempRoot()
@@ -161,7 +164,7 @@ class BundleManagerTest {
         runBlocking { manager.checkForUpdate("manifest://tfile") }
         assertFalse(
             "tampered-file/ must REJECT on SHA-256: partial stage discarded",
-            stagedDir(root, manifest.bundleId).exists(),
+            stagedDir(root, manifest.configId).exists(),
         )
     }
 
@@ -191,9 +194,9 @@ class BundleManagerTest {
             assertEquals("2026-07-17-r1fixture", activeBundleURL.name)
         }
 
-        // A validly-signed OLDER manifest (version 1, distinct bundleId) served
+        // A validly-signed OLDER manifest (version 1, distinct configId) served
         // over the good fixture's own file bytes.
-        val v1 = sign(loadManifest("good").copy(version = 1, bundleId = "downgrade-v1"))
+        val v1 = sign(loadManifest("good").copy(version = 1, configId = "downgrade-v1"))
         val v1Bytes = WeirJson.encodeToString(BundleUpdateManifest.serializer(), v1).toByteArray()
         val client = object : BundleHttpClient {
             override suspend fun get(url: String, maxBytes: Long): ByteArray =
@@ -219,8 +222,8 @@ class BundleManagerTest {
     @Test
     fun checkForUpdate_prunesSupersededStagedDirs() {
         val root = tempRoot()
-        val good = loadManifest("good") // version 2, bundleId 2026-07-17-r1fixture
-        val v3 = sign(good.copy(version = 3, bundleId = "prune-v3"))
+        val good = loadManifest("good") // version 2, configId 2026-07-17-r1fixture
+        val v3 = sign(good.copy(version = 3, configId = "prune-v3"))
         val v3Bytes = WeirJson.encodeToString(BundleUpdateManifest.serializer(), v3).toByteArray()
         val goodBytes = File(fixtureDir("good"), "manifest.json").readBytes()
         val client = object : BundleHttpClient {
@@ -233,10 +236,10 @@ class BundleManagerTest {
         val manager = BundleManager(rootDirectory = root, publicKeyRaw = fixturePublicKeyRaw, httpClient = client)
 
         runBlocking { manager.checkForUpdate("manifest://v2") }
-        assertTrue(stagedDir(root, good.bundleId).isDirectory)
+        assertTrue(stagedDir(root, good.configId).isDirectory)
 
         runBlocking { manager.checkForUpdate("manifest://v3") }
-        assertFalse("superseded stage must be pruned", stagedDir(root, good.bundleId).exists())
+        assertFalse("superseded stage must be pruned", stagedDir(root, good.configId).exists())
         assertTrue("newest stage must remain", stagedDir(root, "prune-v3").isDirectory)
         val stagedChildren = File(root, "staged").listFiles()?.filter { it.isDirectory }?.map { it.name } ?: emptyList()
         assertEquals(listOf("prune-v3"), stagedChildren)
@@ -257,8 +260,8 @@ class BundleManagerTest {
         }
         val manifest = sign(
             BundleUpdateManifest(
-                specVersion = 3, bundleId = "2026-07-18-manyfiles", version = 1,
-                files = manyFiles, signature = "",
+                specVersion = 4, configId = "2026-07-18-manyfiles", version = 1,
+                registryManifestVersion = 1, files = manyFiles, signature = "",
             ),
         )
         assertEquals(ManifestVerification.VALID, BundleManager.verify(manifest, fixturePublicKey()))
@@ -275,7 +278,7 @@ class BundleManagerTest {
         val manager = BundleManager(rootDirectory = root, publicKeyRaw = fixturePublicKeyRaw, httpClient = client)
         runBlocking { manager.checkForUpdate("manifest://many") }
 
-        assertFalse("over-count manifest must not stage", stagedDir(root, manifest.bundleId).exists())
+        assertFalse("over-count manifest must not stage", stagedDir(root, manifest.configId).exists())
         assertEquals("no file should be fetched once the count bound trips", 0, fileFetches)
     }
 
@@ -283,7 +286,7 @@ class BundleManagerTest {
 
     @Test
     fun verifyRejectsUnsupportedSpecVersion() {
-        // The fixture is specVersion 3; forge a spec version outside {0,3}.
+        // The fixture is specVersion 4; forge a spec version outside {4}.
         val good = loadManifest("good")
         val bumped = good.copy(specVersion = 999)
         assertEquals(ManifestVerification.UNSUPPORTED_SPEC_VERSION, BundleManager.verify(bumped, fixturePublicKey()))
@@ -338,6 +341,46 @@ class BundleManagerTest {
         assertFalse(manager.activeBundleContainsFlow("some_other_flow"))
     }
 
+    /**
+     * v4 shape (RFC-010 §2/§3.3): `/publish` writes a single `config.json`
+     * per staged/promoted directory with a top-level `"id"` field naming the
+     * flow — no `manifest.json`/`flows/<flowId>.json` at all. Regression test
+     * for the real bug impl-rn-sdk found: a v4-config-only bundle (the ONLY
+     * artifact shape a real v4 publish produces) was never recognized by
+     * [BundleManager.activeBundleContainsFlow], so a promoted v4 remote
+     * bundle could never be resolved as containing its own flow. Mirrors iOS
+     * `activeBundleContainsFlow`'s config.json-first check exactly.
+     */
+    @Test
+    fun activeBundleContainsFlowRecognizesV4ConfigOnlyBundle() {
+        val embedded = tempRoot()
+        File(embedded, "config.json").writeText("""{"id":"cob_intake","specVersion":4}""")
+        val manager = BundleManager(
+            rootDirectory = tempRoot(),
+            publicKeyRaw = fixturePublicKeyRaw,
+            embeddedBundleRoot = embedded,
+        )
+        assertTrue(manager.activeBundleContainsFlow("cob_intake"))
+        assertFalse(manager.activeBundleContainsFlow("some_other_flow"))
+    }
+
+    @Test
+    fun activeBundleContainsFlowFallsThroughWhenConfigJsonIdDoesNotMatch() {
+        // A config.json present but for a DIFFERENT flow must not short-circuit
+        // a true match living in the legacy manifest.json shape (defense
+        // against a stale/mismatched config.json left over in the same dir).
+        val embedded = tempRoot()
+        File(embedded, "config.json").writeText("""{"id":"some_other_flow","specVersion":4}""")
+        File(embedded, "manifest.json").writeText("""{"flowId":"cob_intake","specVersion":3}""")
+        val manager = BundleManager(
+            rootDirectory = tempRoot(),
+            publicKeyRaw = fixturePublicKeyRaw,
+            embeddedBundleRoot = embedded,
+        )
+        assertTrue(manager.activeBundleContainsFlow("cob_intake"))
+        assertFalse(manager.activeBundleContainsFlow("no-such-flow-anywhere"))
+    }
+
     @Test
     fun promoteWithNoStagedUpdateIsNoOp() {
         val root = tempRoot()
@@ -361,8 +404,8 @@ class BundleManagerTest {
         assertEquals(activeBefore, manager.activeBundleURL)
 
         manager.promoteStagedUpdateIfAny()
-        val bundleId = loadManifest("good").bundleId
-        assertEquals(File(File(root, "promoted"), bundleId), manager.activeBundleURL)
+        val configId = loadManifest("good").configId
+        assertEquals(File(File(root, "promoted"), configId), manager.activeBundleURL)
         assertTrue(manager.activeBundleContainsFlow("cob_intake"))
         // active.json persisted.
         assertTrue(File(root, "active.json").isFile)
@@ -377,7 +420,7 @@ class BundleManagerTest {
             httpClient = FixtureHttpClient(fixtureDir("good"), "manifest://good"),
         )
         runBlocking { manager.checkForUpdate("manifest://good") }
-        assertFalse(stagedDir(root, loadManifest("good").bundleId).exists())
+        assertFalse(stagedDir(root, loadManifest("good").configId).exists())
         manager.promoteStagedUpdateIfAny()
         // Still on embedded/placeholder — no remote bundle ever activated.
         assertFalse(manager.activeBundleContainsFlow("cob_intake"))
@@ -395,14 +438,14 @@ class BundleManagerTest {
             httpClient = FixtureHttpClient(fixtureDir("good"), "manifest://good"),
         ).also { runBlocking { it.checkForUpdate("manifest://good") } }
 
-        val bundleId = loadManifest("good").bundleId
-        assertTrue(stagedDir(root, bundleId).isDirectory)
+        val configId = loadManifest("good").configId
+        assertTrue(stagedDir(root, configId).isDirectory)
 
         // Launch N+1: a fresh BundleManager on the SAME root (no in-memory
         // carryover) must rehydrate + re-verify the staged dir, then promote.
         val relaunched = BundleManager(rootDirectory = root, publicKeyRaw = fixturePublicKeyRaw)
         relaunched.promoteStagedUpdateIfAny()
-        assertEquals(File(File(root, "promoted"), bundleId), relaunched.activeBundleURL)
+        assertEquals(File(File(root, "promoted"), configId), relaunched.activeBundleURL)
         assertTrue(relaunched.activeBundleContainsFlow("cob_intake"))
     }
 
@@ -415,14 +458,14 @@ class BundleManagerTest {
             httpClient = FixtureHttpClient(fixtureDir("good"), "manifest://good"),
         ).also { runBlocking { it.checkForUpdate("manifest://good") } }
 
-        val bundleId = loadManifest("good").bundleId
+        val configId = loadManifest("good").configId
         // Tamper a staged file on disk AFTER it was validly staged.
-        File(stagedDir(root, bundleId), "index.html").writeText("tampered-on-disk")
+        File(stagedDir(root, configId), "config.json").writeText("tampered-on-disk")
 
         // Relaunch must RE-VERIFY (not trust the sidecar) and discard the stage.
         val relaunched = BundleManager(rootDirectory = root, publicKeyRaw = fixturePublicKeyRaw)
         relaunched.promoteStagedUpdateIfAny()
-        assertFalse("tampered stage must be discarded on rehydrate", stagedDir(root, bundleId).exists())
+        assertFalse("tampered stage must be discarded on rehydrate", stagedDir(root, configId).exists())
         assertFalse(relaunched.activeBundleContainsFlow("cob_intake"))
     }
 
@@ -437,11 +480,11 @@ class BundleManagerTest {
             runBlocking { it.checkForUpdate("manifest://good") }
             it.promoteStagedUpdateIfAny()
         }
-        val bundleId = loadManifest("good").bundleId
+        val configId = loadManifest("good").configId
 
         // Relaunch: active.json must restore the promoted bundle as active.
         val relaunched = BundleManager(rootDirectory = root, publicKeyRaw = fixturePublicKeyRaw)
-        assertEquals(File(File(root, "promoted"), bundleId), relaunched.activeBundleURL)
+        assertEquals(File(File(root, "promoted"), configId), relaunched.activeBundleURL)
         assertTrue(relaunched.activeBundleContainsFlow("cob_intake"))
     }
 
@@ -454,17 +497,17 @@ class BundleManagerTest {
             publicKeyRaw = fixturePublicKeyRaw,
             httpClient = FixtureHttpClient(fixtureDir("good"), "manifest://good"),
         ).also { runBlocking { it.checkForUpdate("manifest://good") } }
-        val bundleId = loadManifest("good").bundleId
+        val configId = loadManifest("good").configId
 
         // A KEYLESS instance (like Weir.fallbackBundleManager) constructed on
         // the same shared root must NOT destroy the stage it cannot judge.
         BundleManager(rootDirectory = root, publicKeyRaw = null)
-        assertTrue("keyless instance must leave a stage it cannot judge", stagedDir(root, bundleId).isDirectory)
+        assertTrue("keyless instance must leave a stage it cannot judge", stagedDir(root, configId).isDirectory)
 
         // A correctly-keyed relaunch still promotes it.
         val keyed = BundleManager(rootDirectory = root, publicKeyRaw = fixturePublicKeyRaw)
         keyed.promoteStagedUpdateIfAny()
-        assertEquals(File(File(root, "promoted"), bundleId), keyed.activeBundleURL)
+        assertEquals(File(File(root, "promoted"), configId), keyed.activeBundleURL)
     }
 
     // ---- Path traversal (android review P1) ----
@@ -485,9 +528,10 @@ class BundleManagerTest {
             sha256 = BundleManager.sha256Hex(maliciousBytes),
         )
         val unsigned = BundleUpdateManifest(
-            specVersion = 3,
-            bundleId = "2026-07-18-traversal",
+            specVersion = 4,
+            configId = "2026-07-18-traversal",
             version = 1,
+            registryManifestVersion = 1,
             files = listOf(maliciousFile),
             signature = "",
         )
@@ -507,20 +551,21 @@ class BundleManagerTest {
         val manager = BundleManager(rootDirectory = root, publicKeyRaw = fixturePublicKeyRaw, httpClient = httpClient)
         runBlocking { manager.checkForUpdate("manifest://traversal") }
 
-        // Nothing staged for this bundleId...
-        assertFalse("malicious stage must be discarded, not left behind", stagedDir(root, manifest.bundleId).exists())
+        // Nothing staged for this configId...
+        assertFalse("malicious stage must be discarded, not left behind", stagedDir(root, manifest.configId).exists())
         // ...and nothing written outside staged/ at all (the actual escape target).
         assertFalse("path traversal must not escape staged/", File(root, "escape.txt").exists())
         assertFalse("path traversal must not escape the root", File(root.parentFile, "escape.txt").exists())
     }
 
     @Test
-    fun checkForUpdateRejectsPathTraversingBundleId_failsClosed() {
+    fun checkForUpdateRejectsPathTraversingConfigId_failsClosed() {
         val root = tempRoot()
         val unsigned = BundleUpdateManifest(
-            specVersion = 3,
-            bundleId = "../escape-bundle",
+            specVersion = 4,
+            configId = "../escape-bundle",
             version = 1,
+            registryManifestVersion = 1,
             files = emptyList(),
             signature = "",
         )

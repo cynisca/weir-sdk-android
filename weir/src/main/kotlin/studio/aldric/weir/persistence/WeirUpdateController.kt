@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import studio.aldric.weir.bridge.EventSink
 import java.io.File
 
 /**
@@ -32,6 +33,12 @@ class WeirUpdateController(
     private val foregroundTrigger: ForegroundFlushTrigger? = null,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     private val logger: (String) -> Unit = {},
+    /** Manifest/remote-bundle health telemetry sink — passed straight through
+     *  to [BundleManager]; `null` (the default) keeps this controller silent,
+     *  matching pre-Phase-3 behavior. See [Weir.configure]'s `eventSink`
+     *  param, the only production wiring site. */
+    eventSink: EventSink? = null,
+    private val gatingProvider: (() -> ConfigFetchGatingQuery?)? = null,
 ) {
     val bundleManager: BundleManager = BundleManager(
         rootDirectory = rootDirectory,
@@ -39,6 +46,7 @@ class WeirUpdateController(
         embeddedBundleRoot = embeddedBundleRoot,
         httpClient = httpClient,
         logger = logger,
+        eventSink = eventSink,
     )
 
     /**
@@ -59,7 +67,14 @@ class WeirUpdateController(
      */
     fun checkForUpdate() {
         scope.launch {
-            bundleManager.checkForUpdate(config.manifestURL)
+            val query = gatingProvider?.invoke()
+            val url = if (query != null) {
+                val separator = if (config.manifestURL.contains('?')) "&" else "?"
+                "${config.manifestURL}$separator${query.toQueryString()}"
+            } else {
+                config.manifestURL
+            }
+            bundleManager.checkForUpdate(url)
         }
     }
 

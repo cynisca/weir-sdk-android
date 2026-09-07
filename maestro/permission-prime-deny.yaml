@@ -1,31 +1,41 @@
-# Layer 3 (Android) — permission prime, deny path.
+# Layer 3 (Android, Compose) — permission prime, deny path.
 #
-# Same as permission-prime-grant.yaml but taps the real system "Deny" (not the
-# in-app "Not now" skip, which never calls the bridge). Asserts the native
-# status banner reads notifications=denied. Requires an API 33+ emulator for the
-# runtime dialog to appear.
+# Retargeted 2026-07-31 for the Compose `:demo` gallery — see
+# permission-prime-grant.yaml's header for the full context on what changed
+# and the one narrowing (this gallery's status pill can't show the captured
+# resultVariable value, only Ready/Presenting/Completed/Dismissed/Failed).
+#
+# Same as permission-prime-grant.yaml but taps the real system "Deny", not the
+# in-app "Keep them off" skip (which never calls the native permission API at
+# all — it's the flow's own skipCta, a different path). Asserts the flow still
+# reaches "Completed permission-prime" after a real deny — a deny is a valid
+# outcome, not a flow failure. Requires an API 33+ emulator for the runtime
+# dialog to appear.
 appId: studio.aldric.weir.demo
 ---
 - launchApp:
     clearState: true
     permissions:
       notifications: unset
-- tapOn: "Start onboarding"
+- scrollUntilVisible:
+    element:
+      text: "Permission prime"
+    direction: DOWN
+- tapOn: "Permission prime"
 - extendedWaitUntil:
-    visible: "Begin"
+    visible: "Allow notifications"
     timeout: 8000
-- tapOn: "Begin"
+- tapOn: "Allow notifications"
 - extendedWaitUntil:
-    visible: "Enable notifications"
-    timeout: 5000
-- tapOn: "Enable notifications"
-- extendedWaitUntil:
-    visible: "Deny"
+    visible: "Don.?t allow"
     timeout: 5000
 - takeScreenshot: permission-deny-system-dialog
-- tapOn: "Deny"
+- tapOn: "Don.?t allow"
+- scrollUntilVisible:
+    element:
+      text: "Flow specimen cabinet"
+    direction: UP
 - extendedWaitUntil:
-    visible: ".*permissionResult.*"
+    visible: ".*Completed permission-prime.*"
     timeout: 5000
-- assertVisible: ".*notifications=denied.*"
 - takeScreenshot: permission-deny-result
